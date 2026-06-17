@@ -6,8 +6,8 @@ Iron arena is a game where you play battle royale games, upgrade your tank, and 
 
 ---
 
-In order to run, simply download and change your directory to the root folder.
-Then run `npm run dev` to open a localhost page. You can then test the prototype from there.
+In order to run, simply download the file onto your desktop. Then go to Terminal or whatever Command Line it is, and run `cd desktop`. Then run `npm run dev` to open a localhost page. You can then test the prototype from there.
 
-**Developed by ItzAarnav**
+
+**Developed by dismantl3d**
 \*trust*
