@@ -51,6 +51,16 @@ export class Engine {
     entity.dead = true;
   }
 
+  // Immediately remove and destroy every entity (used when resetting between
+  // matches). World scenery added via addToWorld is left untouched; registered
+  // systems also remain.
+  removeAllEntities() {
+    for (const e of this.entities) {
+      if (e.view) e.view.destroy({ children: true });
+    }
+    this.entities.length = 0;
+  }
+
   // Register game-wide logic run once per frame, after all entities have
   // updated (so it sees fresh positions). Used for collision, spawning, HUD.
   addSystem(fn) {

@@ -1,0 +1,227 @@
+/* Screen-flow overlays (main menu, waiting room, death screen, customization
+   panels). These are DOM layered over the Pixi canvas — the in-world HUD and
+   upgrade menu remain Pixi. Each overlay is full-screen; interactive bits opt
+   back into pointer events so gameplay keyboard/mouse still works underneath. */
+
+:root {
+  --ia-bg: rgba(16, 16, 22, 0.92);
+  --ia-panel: #191920;
+  --ia-border: #3a3a48;
+  --ia-text: #ffffff;
+  --ia-dim: #9aa0b0;
+  --ia-accent: #00b0e9;
+  --ia-gold: #ffd24a;
+}
+
+.ia-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Arial, Helvetica, sans-serif;
+  color: var(--ia-text);
+  z-index: 10;
+  pointer-events: none; /* children re-enable as needed */
+}
+.ia-overlay.ia-hidden {
+  display: none;
+}
+/* Full-screen modal-style overlays dim the whole view and capture clicks. */
+.ia-overlay.ia-modal {
+  background: var(--ia-bg);
+  pointer-events: auto;
+}
+/* Lighter scrim for customization panels so the tank stays visible behind. */
+.ia-overlay.ia-scrim {
+  background: rgba(16, 16, 22, 0.55);
+  pointer-events: auto;
+}
+
+.ia-title {
+  font-size: 64px;
+  font-weight: 800;
+  letter-spacing: 6px;
+  margin: 0 0 28px;
+  color: var(--ia-text);
+  text-shadow: 0 0 18px rgba(0, 176, 233, 0.5);
+}
+
+.ia-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  pointer-events: auto;
+}
+
+.ia-input {
+  width: 320px;
+  padding: 14px 16px;
+  font-size: 18px;
+  text-align: center;
+  color: var(--ia-text);
+  background: #101016;
+  border: 2px solid var(--ia-border);
+  border-radius: 10px;
+  outline: none;
+}
+.ia-input:focus {
+  border-color: var(--ia-accent);
+}
+
+.ia-btn {
+  width: 320px;
+  padding: 14px 16px;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--ia-text);
+  background: #23232c;
+  border: 2px solid var(--ia-border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 0.06s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.ia-btn:hover {
+  background: #2c2c38;
+  border-color: var(--ia-accent);
+}
+.ia-btn:active {
+  transform: scale(0.98);
+}
+.ia-btn.ia-primary {
+  background: var(--ia-accent);
+  border-color: var(--ia-accent);
+  color: #04222e;
+}
+.ia-btn.ia-primary:hover {
+  filter: brightness(1.08);
+}
+.ia-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Waiting room: top countdown banner, no full dim (player can still see/move). */
+.ia-waiting {
+  align-items: flex-start;
+  padding-top: 40px;
+}
+.ia-banner {
+  text-align: center;
+  pointer-events: none;
+}
+.ia-banner .ia-sub {
+  font-size: 16px;
+  color: var(--ia-dim);
+  letter-spacing: 2px;
+}
+.ia-banner .ia-count {
+  font-size: 72px;
+  font-weight: 800;
+  color: var(--ia-gold);
+  line-height: 1.1;
+}
+.ia-waiting-actions {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  pointer-events: auto;
+}
+.ia-waiting-actions .ia-btn {
+  width: auto;
+  padding: 12px 22px;
+  font-size: 15px;
+}
+
+/* Panel (cosmetics / weapon / iron path). */
+.ia-panel {
+  background: var(--ia-panel);
+  border: 3px solid var(--ia-border);
+  border-radius: 14px;
+  padding: 26px 28px;
+  min-width: 360px;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.ia-panel h2 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: 2px;
+}
+.ia-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.ia-swatch {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  border: 3px solid transparent;
+  cursor: pointer;
+}
+.ia-swatch.ia-selected {
+  border-color: var(--ia-text);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.4);
+}
+.ia-option {
+  padding: 12px 16px;
+  border: 2px solid var(--ia-border);
+  border-radius: 10px;
+  background: #23232c;
+  cursor: pointer;
+  font-weight: 700;
+}
+.ia-option.ia-selected {
+  border-color: var(--ia-accent);
+  background: #2c2c38;
+}
+.ia-note {
+  color: var(--ia-dim);
+  font-size: 14px;
+  margin: 0;
+}
+
+/* Death screen stats. */
+.ia-stats {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 8px 28px;
+  margin: 8px 0 20px;
+  font-size: 18px;
+}
+.ia-stats .ia-k {
+  color: var(--ia-dim);
+  text-align: right;
+}
+.ia-stats .ia-v {
+  font-weight: 700;
+}
+.ia-death-title {
+  font-size: 48px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  color: #e2564b;
+  margin: 0 0 6px;
+}
+.ia-victory-title {
+  font-size: 56px;
+  font-weight: 800;
+  letter-spacing: 5px;
+  color: var(--ia-gold);
+  text-shadow: 0 0 18px rgba(255, 210, 74, 0.5);
+  margin: 0;
+}
+.ia-winner-name {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--ia-text);
+  margin: 4px 0 10px;
+}

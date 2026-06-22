@@ -34,7 +34,8 @@ export const OUTLINE = {
   width: 4,
 };
 
-const arenaHalf = 1400; // half-extent of the square arena, in world units
+const arenaHalf = 6000; // half-extent of the square arena, in world units (much larger than the view)
+const waitingHalf = 1000; // small calm area used by the waiting room
 export const WORLD = {
   gridSize: 64, // px between grid lines
   arenaHalf,
@@ -43,6 +44,14 @@ export const WORLD = {
     minY: -arenaHalf,
     maxX: arenaHalf,
     maxY: arenaHalf,
+  },
+  // The waiting room is a smaller, calmer space; entities teleport into the
+  // full `bounds` when the match starts.
+  waitingBounds: {
+    minX: -waitingHalf,
+    minY: -waitingHalf,
+    maxX: waitingHalf,
+    maxY: waitingHalf,
   },
 };
 
@@ -66,36 +75,74 @@ export const GAME = {
   // Base bullet stats (damage/speed are raised by upgrades).
   bullet: { speed: 780, radius: 7, life: 1.2, damage: 25 },
 
-  enemy: {
-    startAlive: 6, // spawned at game start
-    maxAlive: 14, // continuous spawning fills up to this
-    spawnInterval: 1.0, // seconds between continuous spawns
+  // Bots: AI tanks identical to the player (same size/look/bullets). In the
+  // battle-royale loop the population is FIXED at match start (no respawns).
+  bot: {
+    hp: 60,
+    speed: 150,
+    turnRate: 9, // turret turn smoothness (a touch slower than the player)
     contactDamage: 12,
-    // Size tiers — bigger enemies are slower but worth more score + XP.
-    tiers: [
-      { name: "small", radius: 18, hp: 30, speed: 145, color: 0xef9a3d, score: 50, xp: 7 },
-      { name: "medium", radius: 28, hp: 60, speed: 110, color: 0xe2564b, score: 100, xp: 14 },
-      { name: "large", radius: 44, hp: 150, speed: 74, color: 0xc2497f, score: 250, xp: 36 },
-    ],
-    weights: [0.5, 0.35, 0.15], // base spawn probability per tier (small..large)
+    score: 100, // awarded per bot killed
+    fireRate: 1.3, // seconds between a bot's shots
+    bulletDamage: 8, // bot bullets are weak (placeholder shooting)
+    bulletSpeed: 640,
+    bulletLife: 1.2,
+    separation: 90, // anti-clump spacing in world units
+    directionInterval: [2, 4.5], // seconds between wander heading changes
+    levelMin: 1,
+    levelMax: 3, // bot.level is set in this range, no effect yet
+    label: "BOT", // username placeholder shown above each bot
   },
 
-  // XP / leveling. Requirement grows geometrically each level.
-  xp: {
-    base: 30, // XP needed for level 1 -> 2
-    growth: 1.32, // each level needs this much more
-    magnetRange: 230, // orbs start homing within this distance
-    collectRange: 30, // picked up within this distance of the player edge
+  // Battle royale loop: population is fixed at match start (1 player + bots up
+  // to matchSize), no new spawns after, deaths permanent, last tank standing wins.
+  match: {
+    countdown: 30, // seconds in the waiting room before the match starts
+    waitingBots: 6, // bots shown idling in the waiting room
+    matchSize: 30, // total roster (player + bots) when the match begins
   },
 
-  // Upgrade stats. `step` is the per-point bonus; `max` the point cap per stat.
-  // Tab opens the menu; spend points earned on level-up.
-  upgrades: {
-    order: ["damage", "fireRate", "speed", "bulletSpeed", "maxHp"],
-    damage: { label: "Damage", step: 9, max: 8 },
-    fireRate: { label: "Fire Rate", step: 0.013, max: 8, min: 0.05 }, // subtracts from interval
-    speed: { label: "Move Speed", step: 24, max: 8 },
-    bulletSpeed: { label: "Bullet Speed", step: 75, max: 8 },
-    maxHp: { label: "Max Health", step: 25, max: 8 },
+  // Arena Guardians: three heavy tanks at the center to stop early rushing.
+  guardian: {
+    count: 3,
+    hp: 600,
+    radius: 40, // larger than a normal tank
+    speed: 38, // slow
+    turnRate: 3,
+    color: 0x9a3b3b, // menacing dark red (still a tank shape, "looks like a player")
+    fireRate: 2.2, // slow reload
+    bulletDamage: 36, // high damage
+    bulletSpeed: 360, // slow bullets
+    bulletLife: 3.0,
+    contactDamage: 30,
+    range: 1200, // engages targets within this distance
+    homeRadius: 700, // patrols within this distance of center
   },
+
+  // Toxic fog: a shrinking safe circle. Outside it = damage over time. Prevents
+  // camping and forces the fight inward.
+  fog: {
+    startRadius: arenaHalf * 1.45, // covers ~the whole map at the start
+    minRadius: 500, // smallest the safe zone gets
+    shrinkRate: 70, // world units per second the safe radius contracts
+    dps: 9, // damage per second while outside the safe zone
+    color: 0xa64bff, // toxic purple edge
+  },
+
+  // Cosmetics: pick the player's tank body color. Purely visual.
+  cosmetics: [
+    { name: "Aqua", color: 0x00b0e9 },
+    { name: "Lime", color: 0x76d672 },
+    { name: "Magenta", color: 0xc2497f },
+    { name: "Gold", color: 0xffd24a },
+    { name: "Violet", color: 0x9b6cff },
+  ],
+
+  // Weapons (placeholder loadouts). `barrels` fires that many bullets with a
+  // small spread; the *Mul fields scale the player's fire rate / damage / speed.
+  weapons: [
+    { name: "Standard", barrels: 1 },
+    { name: "Twin", barrels: 2, fireRateMul: 1.15 },
+    { name: "Sniper", barrels: 1, fireRateMul: 1.8, damageMul: 1.6, bulletSpeedMul: 1.4 },
+  ],
 };

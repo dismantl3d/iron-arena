@@ -1,5 +1,7 @@
-// The player-controllable tank. It owns its world transform, HP, and a firing
-// cooldown, and renders a body + barrel with a health bar floating above.
+// A tank — used for BOTH the player and the AI bots, so they are literally the
+// same "species": identical body, turret, outline, bullet style, HP, and health
+// bar. What differs is the *controller*: the player reads `input` + `camera`;
+// a bot has an `ai` brain. Set neither and the tank stands still.
 //
 // View structure (important): `view` is positioned at the tank's world spot but
 // never rotated. The barrel/body live in a child `body` container that IS
@@ -9,14 +11,7 @@ import { Container } from "pixi.js";
 import { COLORS, GAME } from "../config.js";
 import { graphics, drawCircle, drawRect } from "../render/shapes.js";
 import { HealthBar } from "../render/HealthBar.js";
-
-// Step `current` toward `target` (radians) by fraction `t`, taking the shortest
-// way around the circle. t is clamped to 1, giving smooth exponential-style turning.
-function approachAngle(current, target, t) {
-  let diff = target - current;
-  diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // wrap to [-PI, PI]
-  return current + diff * Math.min(t, 1);
-}
+import { approachAngle } from "../utils/angle.js";
 
 const FLASH_DURATION = 0.12; // seconds of "hit punch" after taking damage
 
@@ -37,6 +32,7 @@ export class Tank {
     this.x = x;
     this.y = y;
     this.radius = radius;
+    this.color = color; // body fill (cosmetic); barrel/outline derive from it
     this.rotation = 0; // facing angle in radians
 
     this.speed = speed;
@@ -48,6 +44,13 @@ export class Tank {
     this.camera = camera;
     this.bounds = bounds;
 
+    // Optional bot controller (set by the Game). When present it drives movement
+    // + aim instead of player input. Also used for future bot metadata.
+    this.ai = null;
+    this.team = "player"; // "player" | "bot" — used for bullet collisions
+    this.level = 1; // structural only for bots (1–3); no gameplay effect yet
+
+    this.armor = 0; // fraction of incoming damage blocked (0..1), set by upgrades
     this.barrelLength = radius * 2.2; // muzzle distance from center (for spawning bullets)
     this._fireTimer = 0; // counts down to next allowed shot
     this._flash = 0; // counts down the hit-punch animation
@@ -60,8 +63,10 @@ export class Tank {
     this.syncView();
   }
 
-  // Per-frame: WASD translates in world space; the barrel eases toward the cursor.
-  // Pure state update — the view is refreshed separately in syncView().
+  // Per-frame movement + aim. The *source* of the move vector and desired aim
+  // angle depends on the controller (AI brain or player input); the application
+  // (translate, clamp to arena, smooth turret turn) is shared so the player and
+  // bots move identically. Pure state update — view is refreshed in syncView().
   update(dt) {
     if (this._fireTimer > 0) this._fireTimer -= dt;
     if (this._flash > 0) this._flash -= dt;
@@ -69,21 +74,33 @@ export class Tank {
     this.healthBar.set(this.hp / this.maxHp);
     this.healthBar.update(dt);
 
-    if (!this.input) return;
+    let move = null; // {x, y} direction (need not be normalized; AI returns unit)
+    let aim = null; // desired turret angle, or null to leave rotation as-is
 
-    const move = this.input.moveAxis();
+    if (this.ai) {
+      const cmd = this.ai.think(dt, this);
+      move = cmd.move;
+      aim = cmd.aim;
+    } else if (this.input) {
+      move = this.input.moveAxis();
+      if (this.camera) {
+        const m = this.camera.screenToWorld(this.input.mouse.x, this.input.mouse.y);
+        aim = Math.atan2(m.y - this.y, m.x - this.x);
+      }
+    } else {
+      return; // uncontrolled: nothing to move
+    }
+
     this.x += move.x * this.speed * dt;
     this.y += move.y * this.speed * dt;
 
-    // Keep the player inside the arena.
+    // Keep the tank inside the arena.
     if (this.bounds) {
       this.x = Math.min(Math.max(this.x, this.bounds.minX + this.radius), this.bounds.maxX - this.radius);
       this.y = Math.min(Math.max(this.y, this.bounds.minY + this.radius), this.bounds.maxY - this.radius);
     }
 
-    if (this.camera) {
-      const m = this.camera.screenToWorld(this.input.mouse.x, this.input.mouse.y);
-      const aim = Math.atan2(m.y - this.y, m.x - this.x);
+    if (aim !== null) {
       this.rotation = approachAngle(this.rotation, aim, this.turnRate * dt);
     }
   }
@@ -101,7 +118,7 @@ export class Tank {
   }
 
   takeDamage(amount) {
-    this.hp = Math.max(0, this.hp - amount);
+    this.hp = Math.max(0, this.hp - amount * (1 - this.armor));
     this._flash = FLASH_DURATION;
   }
 
@@ -113,12 +130,19 @@ export class Tank {
     // barrel points along +x (rotation 0 = facing right); base sits at origin
     drawRect(barrel, this.barrelLength / 2, 0, this.barrelLength, barrelWidth, COLORS.tankBarrel);
 
-    const circle = graphics();
-    drawCircle(circle, 0, 0, this.radius, color);
+    this.circle = graphics();
+    drawCircle(this.circle, 0, 0, this.radius, color);
 
-    this.body.addChild(barrel, circle);
+    this.body.addChild(barrel, this.circle);
     this.healthBar.view.position.set(0, -(this.radius + 16));
     this.view.addChild(this.body, this.healthBar.view);
+  }
+
+  // Live-change the body color (used by the cosmetics picker in the waiting room).
+  setColor(color) {
+    this.color = color;
+    this.circle.clear();
+    drawCircle(this.circle, 0, 0, this.radius, color);
   }
 
   // Push the entity's state onto its view: position, barrel rotation, the brief

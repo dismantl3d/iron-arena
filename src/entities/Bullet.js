@@ -6,7 +6,7 @@
 import { graphics, drawCircle } from "../render/shapes.js";
 
 export class Bullet {
-  constructor({ x, y, angle, speed, radius, life, damage, color, bounds = null }) {
+  constructor({ x, y, angle, speed, radius, life, damage, color, bounds = null, team = "player" }) {
     this.x = x;
     this.y = y;
     this.vx = Math.cos(angle) * speed; // baked once; bullet flies straight
@@ -15,6 +15,7 @@ export class Bullet {
     this.life = life;
     this.damage = damage;
     this.bounds = bounds;
+    this.team = team; // who fired it; only damages the other team
     this.dead = false;
 
     this.view = drawCircle(graphics(), 0, 0, radius, color);
