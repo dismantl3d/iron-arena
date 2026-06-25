@@ -1,15 +1,16 @@
 // Customization panels reached from the main menu and the waiting room:
-//   CosmeticsPanel — pick a tank body color
 //   ArsenalPanel   — pick a weapon (card grid; locked until unlocked on the Iron Path)
 //   IronPathPanel  — the 1..60 progression track (weapon unlocks every 6 levels)
+// (The redesigned Cosmetics locker lives in CosmeticsPanel.js.)
 //
 // Each is a floating card above everything (the menu hides itself when one opens
 // — see GameFlow). They read the current selection/level from the profile and
 // report choices via onSelect; GameFlow applies them live + persists.
 
-import { el, hexToCss } from "./dom.js";
+import { el } from "./dom.js";
 import { GAME } from "../config.js";
 import { weaponPreviewSvg } from "./weaponPreview.js";
+import { sharedTooltip } from "./Tooltip.js";
 import { isWeaponUnlocked, unlockLevel, levelProgress } from "../game/IronPath.js";
 
 class Panel {
@@ -28,37 +29,6 @@ class Panel {
   }
   hide() {
     this.root.classList.add("ia-hidden");
-  }
-}
-
-export class CosmeticsPanel extends Panel {
-  // onSelect(index) — called when a swatch is chosen.
-  constructor(profile, onSelect, onClose) {
-    super("COSMETICS", onClose);
-    this.profile = profile;
-    this.swatches = GAME.cosmetics.map((c, i) =>
-      el("div", {
-        class: "ia-swatch",
-        style: { background: hexToCss(c.color) },
-        on: {
-          click: () => {
-            onSelect(i);
-            this.#highlight();
-          },
-        },
-      }),
-    );
-    this.swatches.forEach((s) => this.body.appendChild(s));
-    this.#highlight();
-  }
-  #highlight() {
-    this.swatches.forEach((s, i) =>
-      s.classList.toggle("ia-selected", i === this.profile.cosmetic),
-    );
-  }
-  show() {
-    this.#highlight();
-    super.show();
   }
 }
 
@@ -128,6 +98,7 @@ export class IronPathPanel extends Panel {
   constructor(profile, onClose) {
     super("IRON PATH", onClose);
     this.profile = profile;
+    this.tip = sharedTooltip();
     this.body.classList.remove("ia-row");
     this.body.style.flexDirection = "column";
 
@@ -142,6 +113,27 @@ export class IronPathPanel extends Panel {
   show() {
     this.#render();
     super.show();
+  }
+
+  // What a level rewards (for the hover tooltip). Weapon levels grant a weapon;
+  // some milestone levels grant a cosmetic (placeholder flavor); the rest are
+  // plain progress nodes.
+  #reward(lvl, weaponIndex) {
+    if (weaponIndex >= 0 && GAME.weapons[weaponIndex]) {
+      return { name: GAME.weapons[weaponIndex].name, type: "Weapon" };
+    }
+    if (lvl % 3 === 0) {
+      const pools = [
+        { type: "Title", list: GAME.titles },
+        { type: "Kill FX", list: GAME.killFx },
+        { type: "Trail", list: GAME.trails },
+        { type: "Wrap", list: GAME.wraps },
+      ];
+      const pool = pools[Math.floor(lvl / 3) % pools.length];
+      const item = pool.list[Math.floor(lvl / 3) % pool.list.length];
+      return { name: item.name, type: pool.type };
+    }
+    return { name: `Level ${lvl}`, type: "Progress Node" };
   }
 
   #render() {
@@ -159,6 +151,7 @@ export class IronPathPanel extends Panel {
       const weaponIndex = lvl % GAME.ironPath.unlockEvery === 0 ? lvl / GAME.ironPath.unlockEvery : -1;
       const unlocked = level >= lvl;
       const isCurrent = lvl === level;
+      const reward = this.#reward(lvl, weaponIndex);
 
       const cls =
         "ia-node" +
@@ -176,7 +169,13 @@ export class IronPathPanel extends Panel {
         kids.push(el("div", { class: "ia-node-dot" }));
       }
 
-      const node = el("div", { class: cls }, kids);
+      const node = el("div", {
+        class: cls,
+        on: {
+          mouseenter: () => this.tip.show(node, reward),
+          mouseleave: () => this.tip.hide(),
+        },
+      }, kids);
       if (isCurrent) current = node;
       this.track.appendChild(node);
     }

@@ -9,7 +9,11 @@ const KEY = "ironArena.profile";
 export class Profile {
   constructor(data = {}) {
     this.username = data.username || "";
-    this.cosmetic = data.cosmetic ?? 0; // index into GAME.cosmetics
+    this.cosmetic = data.cosmetic ?? 0; // index into GAME.cosmetics (color)
+    this.wrap = data.wrap ?? 0; // index into GAME.wraps
+    this.trail = data.trail ?? 0; // index into GAME.trails
+    this.killFx = data.killFx ?? 0; // index into GAME.killFx
+    this.title = data.title ?? 0; // index into GAME.titles
     this.weapon = data.weapon ?? 0; // index into GAME.weapons
     this.ironPathXp = data.ironPathXp || 0;
   }
@@ -47,6 +51,10 @@ export class Profile {
         JSON.stringify({
           username: this.username,
           cosmetic: this.cosmetic,
+          wrap: this.wrap,
+          trail: this.trail,
+          killFx: this.killFx,
+          title: this.title,
           weapon: this.weapon,
           ironPathXp: this.ironPathXp,
         }),

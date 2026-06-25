@@ -22,6 +22,7 @@ import { Particle } from "../entities/Particle.js";
 import { DamageNumber } from "../entities/DamageNumber.js";
 import { UpgradePickup } from "../entities/UpgradePickup.js";
 import { Crate } from "../entities/Crate.js";
+import { Wall } from "../entities/Wall.js";
 import { Drone } from "../entities/Drone.js";
 import { BotBrain } from "./BotBrain.js";
 import { GuardianBrain } from "./GuardianBrain.js";
@@ -43,6 +44,9 @@ import { createGrid } from "../render/Grid.js";
 import { createArenaFloor, createArenaBorder } from "../render/Arena.js";
 import { COLORS, WORLD, GAME } from "../config.js";
 
+// Cycled by the "rainbow" cosmetic trail.
+const HSV = [0xff5555, 0xffa53a, 0xffd24a, 0x76d672, 0x4aa3ff, 0x9b6cff];
+
 export class Game {
   // callbacks: { onCountdown(s), onMatchStart(), onMatchEnd(stats), onWin(stats) }
   constructor(engine, input, callbacks = {}) {
@@ -58,6 +62,7 @@ export class Game {
     this.guardians = [];
     this.pickups = [];
     this.crates = [];
+    this.walls = [];
     this.player = null;
     this.profile = null;
     this.weapon = GAME.weapons[0];
@@ -67,6 +72,8 @@ export class Game {
 
     this._playerHitCd = 0;
     this._flashCd = 0;
+    this._trailCd = 0;
+    this._rainbow = 0;
     this.showFps = false;
     this.phase = "idle";
     this.combatEnabled = false; // shooting allowed (waiting room + match)
@@ -149,6 +156,7 @@ export class Game {
     for (const bot of this.bots) this.#placeInArena(bot, 1200);
     while (this.bots.length < GAME.match.matchSize - 1) this.#spawnBot();
 
+    this.#spawnWalls();
     this.#spawnGuardians();
     this.#spawnPickups();
     this.#spawnCrates();
@@ -171,6 +179,25 @@ export class Game {
     if (this.profile) this.profile.cosmetic = index;
     const c = GAME.cosmetics[index] || GAME.cosmetics[0];
     if (this.player) this.player.setColor(c.color);
+  }
+
+  setWrap(index) {
+    if (this.profile) this.profile.wrap = index;
+    const w = GAME.wraps[index] || GAME.wraps[0];
+    if (this.player) this.player.setWrap(w.pattern);
+  }
+
+  setTrail(index) {
+    if (this.profile) this.profile.trail = index; // read live in #emitTrail
+  }
+
+  setKillFx(index) {
+    if (this.profile) this.profile.killFx = index; // read live on a kill
+  }
+
+  setTitle(index) {
+    if (this.profile) this.profile.title = index;
+    if (this.titleLabel) this.titleLabel.text = `[${(GAME.titles[index] || GAME.titles[0]).name}]`;
   }
 
   setWeapon(index) {
@@ -218,6 +245,8 @@ export class Game {
     }
 
     this.#separateBots();
+    if (this.walls.length) this.#resolveWalls();
+    if (this.phase === "waiting" || this.phase === "playing") this.#emitTrail(dt);
 
     if (this.phase === "waiting") {
       this.countdown -= dt;
@@ -234,6 +263,7 @@ export class Game {
     this.guardians = this.guardians.filter((g) => !g.dead);
     this.pickups = this.pickups.filter((p) => !p.dead);
     this.crates = this.crates.filter((c) => !c.dead);
+    this.walls = this.walls.filter((w) => !w.dead);
     if (this.sentryDrone && this.sentryDrone.dead) this.sentryDrone = null;
     if (this.lootDrone && this.lootDrone.dead) this.lootDrone = null;
 
@@ -256,6 +286,7 @@ export class Game {
         bots: this.bots,
         guardians: this.guardians,
         crates: this.crates,
+        walls: this.walls,
         fogRadius: this.fog.radius,
       });
     }
@@ -393,6 +424,7 @@ export class Game {
     if (byTeam === "player") {
       this.kills += 1;
       this.score += big ? 500 : GAME.bot.score;
+      this.#killEffect(t.x, t.y, t.color); // cosmetic kill FX
     }
   }
 
@@ -606,8 +638,8 @@ export class Game {
         c.dead = true;
         for (const it of c.items) this.#applyItem(it);
         this.upgradeHud.refresh(this.upgrades);
-        this.#burst(c.x, c.y, RARITY_COLOR[c.rarity], 18);
-        this.engine.camera.shake(5);
+        this.#crateBurst(c);
+        this.engine.camera.shake(6);
       }
     }
   }
@@ -620,6 +652,133 @@ export class Game {
     } else {
       this.upgrades.collectNormal(it.typeKey, it.rarity);
       this.#applyStats();
+    }
+  }
+
+  // Crate opening: a brown burst plus item-colored shards ejecting outward.
+  #crateBurst(c) {
+    this.#burst(c.x, c.y, COLORS.crate, 16);
+    this.#burst(c.x, c.y, COLORS.crateEdge, 10);
+    for (const it of c.items) {
+      const color = it.kind === "special" ? 0xffd24a : RARITY_COLOR[it.rarity];
+      const a = Math.random() * Math.PI * 2;
+      const s = 220 + Math.random() * 160;
+      this.engine.addEntity(
+        new Particle({ x: c.x, y: c.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 5, color, life: 0.5 }),
+      );
+    }
+  }
+
+  // --- walls ----------------------------------------------------------------
+
+  // Procedural wall clusters of simple rectangles. Spawning avoids the center
+  // (guardians/loot) and the player's outer-ring drop, and uses loose clusters
+  // so routes stay open (never fully boxing anyone in).
+  #spawnWalls() {
+    const cfg = GAME.walls;
+    const [pmin, pmax] = cfg.perCluster;
+    const [smin, smax] = cfg.size;
+    const reach = WORLD.arenaHalf * 0.92;
+    let made = 0;
+    let guard = 0;
+    while (made < cfg.clusters && guard++ < cfg.clusters * 12) {
+      // cluster anchor: away from center and the player's drop
+      const a = Math.random() * Math.PI * 2;
+      const r = cfg.avoidCenter + Math.random() * (reach - cfg.avoidCenter);
+      const cx = Math.cos(a) * r;
+      const cy = Math.sin(a) * r;
+      if (this.player && Math.hypot(cx - this.player.x, cy - this.player.y) < cfg.minPlayerDist) continue;
+
+      const n = pmin + ((Math.random() * (pmax - pmin + 1)) | 0);
+      for (let i = 0; i < n; i++) {
+        const w = smin + Math.random() * (smax - smin);
+        const h = smin + Math.random() * (smax - smin);
+        const ox = (Math.random() - 0.5) * smax * 1.4;
+        const oy = (Math.random() - 0.5) * smax * 1.4;
+        const wall = new Wall({ x: cx + ox, y: cy + oy, w, h });
+        this.walls.push(wall);
+        this.engine.addEntity(wall);
+      }
+      made++;
+    }
+  }
+
+  // Push tanks out of walls (circle-vs-AABB, shortest axis) and kill bullets
+  // that hit a wall.
+  #resolveWalls() {
+    const tanks = this.#targets();
+    for (const w of this.walls) {
+      for (const t of tanks) {
+        const nx = Math.max(w.minX, Math.min(t.x, w.maxX));
+        const ny = Math.max(w.minY, Math.min(t.y, w.maxY));
+        const dx = t.x - nx;
+        const dy = t.y - ny;
+        if (dx * dx + dy * dy < t.radius * t.radius) {
+          if (dx === 0 && dy === 0) continue; // center inside (rare) — skip
+          const d = Math.hypot(dx, dy);
+          const push = t.radius - d;
+          t.x += (dx / d) * push;
+          t.y += (dy / d) * push;
+          // bleed the velocity component into the wall so it doesn't stick
+          if (Math.abs(dx) > Math.abs(dy)) t.vx = 0;
+          else t.vy = 0;
+        }
+      }
+      for (const b of this.bullets) {
+        if (b.dead) continue;
+        if (b.x >= w.minX && b.x <= w.maxX && b.y >= w.minY && b.y <= w.maxY) {
+          b.dead = true;
+          this.#burst(b.x, b.y, COLORS.hitSpark, 4);
+        }
+      }
+    }
+  }
+
+  // --- cosmetics: trails + kill FX -----------------------------------------
+
+  // Leave a cosmetic trail behind the moving player (light — a couple of marks).
+  #emitTrail(dt) {
+    const p = this.player;
+    if (!p || p.dead) return;
+    const def = GAME.trails[this.profile?.trail ?? 0];
+    if (!def || def.style === "none") return;
+    const speed = Math.hypot(p.vx, p.vy);
+    if (speed < 40) return;
+    this._trailCd = (this._trailCd || 0) - dt;
+    if (this._trailCd > 0) return;
+    this._trailCd = 0.05;
+
+    const bx = p.x - Math.cos(p.rotation) * p.radius;
+    const by = p.y - Math.sin(p.rotation) * p.radius;
+    let color = def.color ?? p.color;
+    if (def.style === "rainbow") color = HSV[(this._rainbow = (this._rainbow + 1) % HSV.length)];
+    const radius = def.style === "squares" ? 5 : def.style === "spark" ? 3 : 7;
+    this.engine.addEntity(
+      new Particle({ x: bx, y: by, vx: 0, vy: 0, radius, color, life: def.style === "smoke" ? 0.6 : 0.4 }),
+    );
+  }
+
+  // Spawn the equipped kill FX at a defeated tank (player kills only).
+  #killEffect(x, y, color) {
+    const fx = GAME.killFx[this.profile?.killFx ?? 0]?.fx || "burst";
+    if (fx === "stars") {
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2;
+        const s = 200;
+        this.engine.addEntity(new Particle({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 4, color: 0xffd24a, life: 0.6 }));
+      }
+    } else if (fx === "explosion") {
+      this.#burst(x, y, 0xffa53a, 22);
+      this.#burst(x, y, 0xe2564b, 14);
+      this.engine.camera.shake(8);
+    } else if (fx === "dissolve") {
+      for (let i = 0; i < 16; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 30 + Math.random() * 60;
+        this.engine.addEntity(new Particle({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 3, color, life: 0.8 }));
+      }
+    } else {
+      this.#burst(x, y, color, 16); // burst (default)
     }
   }
 
@@ -641,18 +800,26 @@ export class Game {
       bounds: this.bounds,
       color: c.color,
       turret: this.weapon?.turret || "single",
+      wrap: (GAME.wraps[this.profile.wrap] || GAME.wraps[0]).pattern,
     });
     this.player.team = "player";
     this.engine.addEntity(this.player);
     this.engine.camera.follow(this.player);
 
+    // Title above the name: "[TITLE]" over "Username".
+    this.titleLabel = new Text({
+      text: `[${(GAME.titles[this.profile.title] || GAME.titles[0]).name}]`,
+      style: { fill: COLORS.xpFill, fontFamily: "Ubuntu, Arial", fontSize: 12, fontWeight: "bold" },
+    });
+    this.titleLabel.anchor.set(0.5);
+    this.titleLabel.position.set(0, this.player.radius + 16);
     this.nameLabel = new Text({
       text: this.profile.displayName,
       style: { fill: COLORS.hudText, fontFamily: "Ubuntu, Arial", fontSize: 13, fontWeight: "bold" },
     });
     this.nameLabel.anchor.set(0.5);
-    this.nameLabel.position.set(0, this.player.radius + 18);
-    this.player.view.addChild(this.nameLabel);
+    this.nameLabel.position.set(0, this.player.radius + 33);
+    this.player.view.addChild(this.titleLabel, this.nameLabel);
 
     this.#applyStats();
   }
@@ -697,7 +864,7 @@ export class Game {
       });
       gd.team = "guardian";
       gd.ai = new GuardianBrain(this);
-      this.#addLabel(gd, "GUARDIAN", 0xff9a9a);
+      this.#addLabel(gd, "GUARDIAN", 0xb23a3a);
       this.guardians.push(gd);
       this.engine.addEntity(gd);
     }
@@ -754,6 +921,7 @@ export class Game {
     this.guardians = [];
     this.pickups = [];
     this.crates = [];
+    this.walls = [];
     this.sentryDrone = null;
     this.lootDrone = null;
     this._playerHitCd = 0;

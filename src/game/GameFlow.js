@@ -15,7 +15,8 @@ import { MainMenu } from "../ui/MainMenu.js";
 import { WaitingRoom } from "../ui/WaitingRoom.js";
 import { DeathScreen } from "../ui/DeathScreen.js";
 import { WinnerScreen } from "../ui/WinnerScreen.js";
-import { CosmeticsPanel, ArsenalPanel, IronPathPanel } from "../ui/LockerPanels.js";
+import { ArsenalPanel, IronPathPanel } from "../ui/LockerPanels.js";
+import { CosmeticsPanel } from "../ui/CosmeticsPanel.js";
 
 export class GameFlow {
   constructor(engine, input) {
@@ -36,8 +37,18 @@ export class GameFlow {
 
     // Customization panels (shared by the menu and the waiting room). Their Back
     // button returns to whatever base screen opened them.
-    this.cosmetics = new CosmeticsPanel(this.profile, (i) => this.#selectCosmetic(i), () => this.#backFromPanel());
-    this.arsenal = new ArsenalPanel(this.profile, (i) => this.#selectWeapon(i), () => this.#backFromPanel());
+    this.cosmetics = new CosmeticsPanel(
+      this.profile,
+      {
+        onColor: (i) => this.#select("cosmetic", "setCosmetic", i),
+        onWrap: (i) => this.#select("wrap", "setWrap", i),
+        onTrail: (i) => this.#select("trail", "setTrail", i),
+        onKillFx: (i) => this.#select("killFx", "setKillFx", i),
+        onTitle: (i) => this.#select("title", "setTitle", i),
+      },
+      () => this.#backFromPanel(),
+    );
+    this.arsenal = new ArsenalPanel(this.profile, (i) => this.#select("weapon", "setWeapon", i), () => this.#backFromPanel());
     this.ironPath = new IronPathPanel(this.profile, () => this.#backFromPanel());
 
     this.menu = new MainMenu(this.profile, {
@@ -96,16 +107,11 @@ export class GameFlow {
 
   // --- customization (works in menu and live in the waiting room) ----------
 
-  #selectCosmetic(i) {
-    this.profile.cosmetic = i;
+  // Persist the chosen index on the profile and apply it live on the Game.
+  #select(field, method, i) {
+    this.profile[field] = i;
     this.profile.save();
-    this.game.setCosmetic(i);
-  }
-
-  #selectWeapon(i) {
-    this.profile.weapon = i;
-    this.profile.save();
-    this.game.setWeapon(i);
+    this.game[method](i);
   }
 
   // Open a panel as the single active screen. From the main menu we hide the

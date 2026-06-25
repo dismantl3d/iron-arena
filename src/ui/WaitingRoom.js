@@ -10,7 +10,7 @@ export class WaitingRoom {
   constructor(callbacks) {
     this.cb = callbacks;
 
-    this.count = el("div", { class: "ia-count", text: "30" });
+    this.count = el("div", { class: "ia-count", text: "15" });
     const banner = el("div", { class: "ia-banner" }, [
       el("div", { class: "ia-sub", text: "STARTING IN" }),
       this.count,

@@ -69,6 +69,13 @@ export class Minimap {
       });
     }
 
+    // walls as faint gray rectangles (drawn first, under the dots)
+    for (const w of state.walls || []) {
+      const a = this.#toMap(w.minX, w.minY);
+      const b = this.#toMap(w.maxX, w.maxY);
+      g.rect(a.mx, a.my, Math.max(1, b.mx - a.mx), Math.max(1, b.my - a.my)).fill({ color: 0x6c7280, alpha: 0.9 });
+    }
+
     for (const c of state.crates || []) this.#square(g, c, DOT.crate);
     for (const b of state.bots || []) this.#dot(g, b, DOT.bot);
     for (const gd of state.guardians || []) this.#dot(g, gd, DOT.guardian);

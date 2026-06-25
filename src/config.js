@@ -1,14 +1,21 @@
 // Global engine + visual + gameplay constants. Keep tunable values here, not
 // scattered in code, so balance/feel can be adjusted in one place.
 
+// Diep.io-inspired LIGHT world: a clean light-gray floor, soft gray grid, and a
+// slightly darker border. Colored tanks/bullets pop against it. (Screen-space UI
+// — HUD/minimap/tooltips — keeps its own dark cards for contrast.)
 export const COLORS = {
-  background: 0x14141a, // outside the arena (darker void)
-  arenaFloor: 0x1e1e26, // the playable area
-  grid: 0x2c2c38,
-  arenaBorder: 0x3a3a48,
+  background: 0xb9bec8, // outside the arena (light void)
+  arenaFloor: 0xcdd2db, // the playable area
+  grid: 0xc1c6d0, // soft gray grid lines
+  arenaBorder: 0x9097a3, // slightly darker border
 
   tankBody: 0x00b0e9, // player blue
-  tankBarrel: 0x9aa0a6,
+  tankBarrel: 0x8a8f99,
+
+  wall: 0xa9aeb9, // procedural walls (world-toned), darker outline derived
+  crate: 0x9c6b3f, // loot crate brown
+  crateEdge: 0x5e3f24, // crate reinforced corners / outline
 
   hpBg: 0x2a2a2a,
   hpFill: 0x76d672, // health-bar green
@@ -17,11 +24,11 @@ export const COLORS = {
   xpOrb: 0x8be0ff,
   xpBg: 0x2a2a2a,
 
-  hitSpark: 0xffe08a, // bullet-impact particles
-  hudText: 0xffffff,
-  hudDim: 0x9aa0b0, // secondary HUD text
+  hitSpark: 0xffd24a, // bullet-impact particles
+  hudText: 0x20242c, // dark text (readable on the light world)
+  hudDim: 0x5b616e, // secondary HUD text
 
-  damageText: 0xffe8a0,
+  damageText: 0x9a4b00,
   menuPanel: 0x191920,
   menuBorder: 0x3a3a48,
   pipOn: 0x76d672,
@@ -70,6 +77,9 @@ export const GAME = {
     turnRate: 16, // barrel aim responsiveness
     fireRate: 0.16, // seconds between shots
     contactInvuln: 0.7, // i-frames after taking contact damage
+    accel: 11, // velocity easing rate — higher = snappier, lower = more glide
+    recoil: 6, // turret kick-back distance on fire (visual only)
+    recoilRecover: 14, // how fast the barrel slides back out
   },
 
   // Base bullet stats (damage/speed are raised by upgrades).
@@ -138,6 +148,56 @@ export const GAME = {
     { name: "Violet", color: 0x9b6cff },
   ],
 
+  // Wraps: a pattern drawn INSIDE the (still circular) tank body. `pattern` is a
+  // key understood by render/wraps.js. Index 0 is the plain default. Placeholders.
+  wraps: [
+    { name: "None", pattern: "none" },
+    { name: "Striped", pattern: "striped" },
+    { name: "Camo", pattern: "camo" },
+    { name: "Lightning", pattern: "lightning" },
+    { name: "Carbon", pattern: "carbon" },
+  ],
+
+  // Trails: a cosmetic trail left behind while moving. `style` keys the emitter
+  // in Game.#emitTrail. Index 0 is none. Placeholders.
+  trails: [
+    { name: "None", style: "none" },
+    { name: "Smoke", style: "smoke", color: 0x8a8f99 },
+    { name: "Squares", style: "squares", color: 0x4aa3ff },
+    { name: "Spark", style: "spark", color: 0xffd24a },
+    { name: "Rainbow", style: "rainbow" },
+  ],
+
+  // Kill FX: an effect spawned ONLY when the player defeats another tank. `fx`
+  // keys Game.#killEffect. Index 0 is a plain burst. Placeholders.
+  killFx: [
+    { name: "Burst", fx: "burst" },
+    { name: "Dissolve", fx: "dissolve" },
+    { name: "Stars", fx: "stars" },
+    { name: "Explosion", fx: "explosion" },
+  ],
+
+  // Titles: a label shown above the player's name (and as a preview). Index 0 is
+  // the default. Unlocking is handled later; everything is selectable for now.
+  titles: [
+    { name: "Rookie", desc: "Every legend starts here." },
+    { name: "Guardian Slayer", desc: "Felled an Arena Guardian." },
+    { name: "Fog Walker", desc: "Outlasted the toxic fog." },
+    { name: "Ironclad", desc: "Survived to the final five." },
+    { name: "Champion", desc: "Won a match as the last tank standing." },
+  ],
+
+  // Procedural walls: impassable rectangles in random clusters. They block
+  // movement and bullets; spawning avoids the center and the player's drop and
+  // leaves routes (see Game.#spawnWalls).
+  walls: {
+    clusters: 7, // number of wall clusters
+    perCluster: [2, 4], // rectangles per cluster (min,max)
+    size: [120, 420], // rectangle side length range (world units)
+    avoidCenter: 1400, // keep clusters this far from the arena center
+    minPlayerDist: 900, // keep clusters away from the player's outer-ring drop
+  },
+
   // Weapons. Index 0 (Standard) is always unlocked; the rest unlock through the
   // Iron Path (one per `ironPath.unlockEvery` levels, in this order). `turret`
   // names the visual barrel layout (rendered by render/turret.js for both the
@@ -176,7 +236,7 @@ export const GAME = {
   // all 3 at once. Counts are per rarity zone (outer -> center). Crates outside
   // the toxic fog are consumed by it (so loot thins as the safe zone shrinks).
   crate: {
-    radius: 30,
+    radius: 44, // bigger than a player tank (radius 28)
     items: 3,
     specialChance: 0.25, // chance any one item in a crate is a special
     perZone: [2, 4, 4, 6], // [center, middle, inner, outside] — matches ZONES order

@@ -7,10 +7,11 @@
 // never rotated. The barrel/body live in a child `body` container that IS
 // rotated, so the health bar (also a child of `view`) always stays upright.
 
-import { Container } from "pixi.js";
+import { Container, Graphics } from "pixi.js";
 import { COLORS, GAME } from "../config.js";
 import { graphics, drawCircle, darken } from "../render/shapes.js";
 import { turretBarrels } from "../render/turret.js";
+import { drawWrap } from "../render/wraps.js";
 import { HealthBar } from "../render/HealthBar.js";
 import { approachAngle } from "../utils/angle.js";
 
@@ -30,6 +31,8 @@ export class Tank {
     camera = null, // needed to convert cursor screen pos -> world pos
     bounds = null, // arena bounds to stay inside
     turret = "single", // barrel layout (see render/turret.js)
+    wrap = "none", // body wrap pattern (see render/wraps.js)
+    accel = GAME.player.accel, // velocity easing rate (movement feel)
   } = {}) {
     this.x = x;
     this.y = y;
@@ -54,14 +57,24 @@ export class Tank {
 
     this.armor = 0; // fraction of incoming damage blocked (0..1), set by upgrades
     this.turret = turret; // current barrel layout name
+    this.wrap = wrap; // current body wrap pattern
     this.barrelLength = radius * 2.2; // muzzle distance from center (for spawning bullets)
     this._fireTimer = 0; // counts down to next allowed shot
     this._flash = 0; // counts down the hit-punch animation
     this.dead = false;
 
+    // Movement feel: carry momentum (velocity eased toward the desired vector).
+    this.accel = accel;
+    this.vx = 0;
+    this.vy = 0;
+    // Turret recoil (visual only): barrels slide back on fire, then recover.
+    this._recoil = 0;
+
     this.view = new Container();
-    this.body = new Container(); // holds barrels + circle; this is what rotates
+    this.body = new Container(); // holds barrels + circle + wrap; this is what rotates
     this.barrels = new Container(); // turret barrels (rebuilt by setWeapon)
+    this.wrapGfx = new Graphics(); // body wrap, masked to the circle
+    this.wrapMask = new Graphics().circle(0, 0, radius).fill(0xffffff);
     this.healthBar = new HealthBar();
     this.#build(color);
     this.syncView();
@@ -74,6 +87,7 @@ export class Tank {
   update(dt) {
     if (this._fireTimer > 0) this._fireTimer -= dt;
     if (this._flash > 0) this._flash -= dt;
+    if (this._recoil > 0) this._recoil *= Math.exp(-GAME.player.recoilRecover * dt);
 
     this.healthBar.set(this.hp / this.maxHp);
     this.healthBar.update(dt);
@@ -95,8 +109,13 @@ export class Tank {
       return; // uncontrolled: nothing to move
     }
 
-    this.x += move.x * this.speed * dt;
-    this.y += move.y * this.speed * dt;
+    // Ease the velocity toward the desired vector so the tank accelerates,
+    // decelerates, and carries a little momentum instead of snapping.
+    const k = 1 - Math.exp(-this.accel * dt);
+    this.vx += (move.x * this.speed - this.vx) * k;
+    this.vy += (move.y * this.speed - this.vy) * k;
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
 
     // Keep the tank inside the arena.
     if (this.bounds) {
@@ -114,6 +133,7 @@ export class Tank {
   tryFire() {
     if (this._fireTimer > 0) return null;
     this._fireTimer = this.fireRate;
+    this._recoil = GAME.player.recoil; // visual barrel kick
     return {
       x: this.x + Math.cos(this.rotation) * this.barrelLength,
       y: this.y + Math.sin(this.rotation) * this.barrelLength,
@@ -134,9 +154,19 @@ export class Tank {
     this.circle = graphics();
     drawCircle(this.circle, 0, 0, this.radius, color);
 
-    this.body.addChild(this.barrels, this.circle);
+    // Wrap sits over the body fill, clipped to the body circle by a mask.
+    this.wrapGfx.mask = this.wrapMask;
+    drawWrap(this.wrapGfx, this.wrap, this.radius, color);
+
+    this.body.addChild(this.barrels, this.circle, this.wrapGfx, this.wrapMask);
     this.healthBar.view.position.set(0, -(this.radius + 16));
     this.view.addChild(this.body, this.healthBar.view);
+  }
+
+  // Live-change the body wrap pattern (cosmetics).
+  setWrap(pattern) {
+    this.wrap = pattern || "none";
+    drawWrap(this.wrapGfx, this.wrap, this.radius, this.color);
   }
 
   // (Re)draw the turret barrels for a layout name (see render/turret.js). Each
@@ -168,6 +198,7 @@ export class Tank {
     this.color = color;
     this.circle.clear();
     drawCircle(this.circle, 0, 0, this.radius, color);
+    drawWrap(this.wrapGfx, this.wrap, this.radius, color); // wrap derives from body color
   }
 
   // Push the entity's state onto its view: position, barrel rotation, the brief
@@ -175,6 +206,7 @@ export class Tank {
   syncView() {
     this.view.position.set(this.x, this.y);
     this.body.rotation = this.rotation;
+    this.barrels.x = -this._recoil; // barrels kick back along the firing axis
     const punch = this._flash > 0 ? 1 + 0.18 * (this._flash / FLASH_DURATION) : 1;
     this.body.scale.set(punch);
   }
