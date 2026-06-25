@@ -12,9 +12,9 @@ In order to run, simply download the file onto your desktop. Then go to Terminal
 ### Changelog
 
 ```
-v1.7.2 | 6/25/26 ›› UI reworks + free-to-use cosmetics now in cosmetics locker. Added 4 types of cosmetics.
+(CURRENT) v1.7.2 | 6/25/26 ›› UI reworks + free-to-use cosmetics now in cosmetics locker. Added 4 types of cosmetics.
 
-(CURRENT) v1.6.0 | 6/22/26 ›› UI bug fixes + Iron Path fully functional, with placeholders for future items.
+v1.6.0 | 6/22/26 ›› UI bug fixes + Iron Path fully functional, with placeholders for future items.
 
 v1.5.0 | 6/22/26 ›› UI bug fixes, and added Iron Path weapons.
 
