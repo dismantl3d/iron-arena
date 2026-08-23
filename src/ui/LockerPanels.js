@@ -7,7 +7,7 @@
 // — see GameFlow). They read the current selection/level from the profile and
 // report choices via onSelect; GameFlow applies them live + persists.
 
-import { el } from "./dom.js";
+import { el, hexToCss } from "./dom.js";
 import { GAME } from "../config.js";
 import { weaponPreviewSvg } from "./weaponPreview.js";
 import { sharedTooltip } from "./Tooltip.js";
@@ -92,8 +92,10 @@ export class ArsenalPanel extends Panel {
   }
 }
 
-// Iron Path: a horizontal progression track, 1..maxLevel. Every `unlockEvery`
-// levels is a weapon node (preview + name); the rest are placeholder nodes.
+// Iron Path: a horizontal progression track, 1..maxLevel. Early levels grant
+// concrete rewards (GAME.ironPath.rewards); every `unlockEvery` levels grants a
+// weapon; the rest are plain progress nodes. Each node previews its reward and
+// shows a hover tooltip (name + type).
 export class IronPathPanel extends Panel {
   constructor(profile, onClose) {
     super("IRON PATH", onClose);
@@ -107,6 +109,16 @@ export class IronPathPanel extends Panel {
       el("div", { class: "ia-note" }),
     ]);
     this.track = el("div", { class: "ia-track" });
+    // Vertical mouse-wheel scrolls the horizontal track (scrollbars are hidden).
+    this.track.addEventListener(
+      "wheel",
+      (e) => {
+        if (!e.deltaY) return;
+        e.preventDefault();
+        this.track.scrollLeft += e.deltaY;
+      },
+      { passive: false },
+    );
     this.body.append(this.head, this.track);
   }
 
@@ -115,25 +127,16 @@ export class IronPathPanel extends Panel {
     super.show();
   }
 
-  // What a level rewards (for the hover tooltip). Weapon levels grant a weapon;
-  // some milestone levels grant a cosmetic (placeholder flavor); the rest are
-  // plain progress nodes.
-  #reward(lvl, weaponIndex) {
-    if (weaponIndex >= 0 && GAME.weapons[weaponIndex]) {
-      return { name: GAME.weapons[weaponIndex].name, type: "Weapon" };
+  // The concrete reward for a level: explicit schedule first, then a weapon at
+  // each `unlockEvery` multiple, otherwise a plain progress node.
+  #rewardFor(lvl) {
+    const r = GAME.ironPath.rewards?.[lvl];
+    if (r) return r;
+    if (lvl % GAME.ironPath.unlockEvery === 0) {
+      const wi = lvl / GAME.ironPath.unlockEvery;
+      if (GAME.weapons[wi]) return { type: "weapon", index: wi };
     }
-    if (lvl % 3 === 0) {
-      const pools = [
-        { type: "Title", list: GAME.titles },
-        { type: "Kill FX", list: GAME.killFx },
-        { type: "Trail", list: GAME.trails },
-        { type: "Wrap", list: GAME.wraps },
-      ];
-      const pool = pools[Math.floor(lvl / 3) % pools.length];
-      const item = pool.list[Math.floor(lvl / 3) % pool.list.length];
-      return { name: item.name, type: pool.type };
-    }
-    return { name: `Level ${lvl}`, type: "Progress Node" };
+    return { type: "progress" };
   }
 
   #render() {
@@ -148,39 +151,88 @@ export class IronPathPanel extends Panel {
     this.track.replaceChildren();
     let current = null;
     for (let lvl = 1; lvl <= GAME.ironPath.maxLevel; lvl++) {
-      const weaponIndex = lvl % GAME.ironPath.unlockEvery === 0 ? lvl / GAME.ironPath.unlockEvery : -1;
+      const reward = this.#rewardFor(lvl);
       const unlocked = level >= lvl;
       const isCurrent = lvl === level;
-      const reward = this.#reward(lvl, weaponIndex);
+      const wide = reward.type === "weapon" || reward.type === "title";
 
       const cls =
         "ia-node" +
-        (weaponIndex >= 0 ? " ia-weapon" : "") +
+        (wide ? " ia-weapon" : "") +
         (unlocked ? " ia-unlocked" : "") +
         (isCurrent ? " ia-current" : "");
 
       const kids = [el("div", { class: "ia-node-lvl", text: `Lv ${lvl}` })];
-      if (weaponIndex >= 0 && GAME.weapons[weaponIndex]) {
-        const w = GAME.weapons[weaponIndex];
-        const art = el("div", { class: "ia-node-art" });
-        art.innerHTML = weaponPreviewSvg(w, { color, locked: !unlocked });
-        kids.push(art, el("div", { class: "ia-node-name", text: w.name }));
-      } else {
-        kids.push(el("div", { class: "ia-node-dot" }));
-      }
+      kids.push(...this.#preview(reward, color, unlocked));
 
-      const node = el("div", {
-        class: cls,
-        on: {
-          mouseenter: () => this.tip.show(node, reward),
-          mouseleave: () => this.tip.hide(),
-        },
-      }, kids);
+      const tip = this.#tooltip(reward);
+      const node = el(
+        "div",
+        { class: cls, on: { mouseenter: () => this.tip.show(node, tip), mouseleave: () => this.tip.hide() } },
+        kids,
+      );
       if (isCurrent) current = node;
       this.track.appendChild(node);
     }
 
-    // Scroll the current level into view once laid out.
     if (current) requestAnimationFrame(() => current.scrollIntoView({ inline: "center", block: "nearest" }));
+  }
+
+  // The visual preview elements for a reward (matches its type).
+  #preview(reward, color, unlocked) {
+    switch (reward.type) {
+      case "weapon": {
+        const w = GAME.weapons[reward.index];
+        const art = el("div", { class: "ia-node-art" });
+        art.innerHTML = weaponPreviewSvg(w, { color, locked: !unlocked });
+        return [art, el("div", { class: "ia-node-name", text: w.name })];
+      }
+      case "title": {
+        const t = GAME.titles[reward.index];
+        return [
+          el("div", { class: "ia-node-art" }, [
+            el("div", { class: "ia-node-title", style: { color: hexToCss(t.color) }, text: `[${t.name}]` }),
+          ]),
+          el("div", { class: "ia-node-name", text: "Title" }),
+        ];
+      }
+      case "wrap": {
+        const w = GAME.wraps[reward.index];
+        const art = el("div", { class: "ia-node-art" });
+        art.innerHTML = weaponPreviewSvg({ turret: "single" }, { color, wrap: w.pattern });
+        return [art, el("div", { class: "ia-node-name", text: w.name })];
+      }
+      case "trail": {
+        const t = GAME.trails[reward.index];
+        const line = el("div", { class: `ia-trail-demo ia-trail-${t.style}` });
+        if (t.color) line.style.setProperty("--c", hexToCss(t.color));
+        return [el("div", { class: "ia-node-art" }, [line]), el("div", { class: "ia-node-name", text: t.name })];
+      }
+      case "money":
+        return [
+          el("div", { class: "ia-node-art" }, [el("div", { class: "ia-node-coin", text: "$" })]),
+          el("div", { class: "ia-node-name", text: `$${reward.amount}` }),
+        ];
+      default:
+        return [el("div", { class: "ia-node-dot" })];
+    }
+  }
+
+  // Hover tooltip { name, type } for a reward.
+  #tooltip(reward) {
+    switch (reward.type) {
+      case "weapon":
+        return { name: GAME.weapons[reward.index].name, type: "Weapon" };
+      case "title":
+        return { name: GAME.titles[reward.index].name, type: "Title" };
+      case "wrap":
+        return { name: GAME.wraps[reward.index].name, type: "Wrap" };
+      case "trail":
+        return { name: GAME.trails[reward.index].name, type: "Trail" };
+      case "money":
+        return { name: `$${reward.amount}`, type: "Currency" };
+      default:
+        return { name: "Progress Node", type: "Iron Path" };
+    }
   }
 }

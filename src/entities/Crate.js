@@ -14,8 +14,16 @@ export class Crate {
     this.rarity = rarity; // kept for loot rolls; not shown
     this.items = items;
     this.radius = GAME.crate.radius;
+    this.hp = GAME.crate.hp; // shot open: player bullets chip this down
     this.dead = false;
     this._t = Math.random() * Math.PI * 2; // bob phase
+    this._flash = 0; // brief hit punch
+
+    // AABB edges for bullet collision.
+    this.minX = x - this.radius;
+    this.maxX = x + this.radius;
+    this.minY = y - this.radius;
+    this.maxY = y + this.radius;
 
     const r = this.radius;
     this.view = new Container();
@@ -36,12 +44,19 @@ export class Crate {
     this.syncView();
   }
 
+  takeDamage(amount) {
+    this.hp -= amount;
+    this._flash = 0.12;
+  }
+
   update(dt) {
     this._t += dt * 2.2;
+    if (this._flash > 0) this._flash -= dt;
   }
 
   syncView() {
     this.view.position.set(this.x, this.y);
-    this.view.scale.set(1 + Math.sin(this._t) * 0.04);
+    const punch = this._flash > 0 ? 1.12 : 1;
+    this.view.scale.set((1 + Math.sin(this._t) * 0.04) * punch);
   }
 }

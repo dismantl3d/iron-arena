@@ -41,10 +41,26 @@
 .ia-overlay.ia-hidden {
   display: none;
 }
+/* General hide helper for non-overlay elements (panels toggle inner sections). */
+.ia-hidden {
+  display: none !important;
+}
 /* Full-screen screens (menu / results): solid backdrop, capture clicks. */
 .ia-overlay.ia-modal {
   background: var(--ia-screen);
   pointer-events: auto;
+}
+/* Main menu: translucent so the live animated arena shows through behind the UI. */
+.ia-overlay.ia-menu {
+  background: rgba(18, 18, 24, 0.5);
+}
+/* A translucent panel behind the menu column so the buttons stay readable over
+   the moving scene. */
+.ia-menu-card {
+  background: rgba(20, 20, 28, 0.72);
+  border: 3px solid var(--ia-panel-edge);
+  border-radius: 14px;
+  padding: 34px 40px;
 }
 /* Customization/Iron Path/Arsenal panels float ABOVE everything (one screen at
    a time — the menu hides itself when one opens). Flat dark backdrop, no blur. */
@@ -99,9 +115,11 @@
   border: 3px solid var(--ia-btn-edge);
   border-radius: 8px;
   cursor: pointer;
+  transition: background 0.12s ease, transform 0.06s ease, border-color 0.12s ease;
 }
 .ia-btn:hover {
   background: var(--ia-btn-hover);
+  transform: translateY(-1px); /* subtle lift on hover */
 }
 .ia-btn:active {
   transform: translateY(2px); /* press-in */
@@ -293,6 +311,23 @@
   gap: 10px;
   overflow-x: auto;
   padding: 10px 4px 16px;
+}
+
+/* Hide the native scrollbars on the in-panel scroll areas (clean flat look). */
+.ia-track,
+.ia-arsenal-grid,
+.ia-cos-page,
+.ia-shop-body,
+.ia-ach-list {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge */
+}
+.ia-track::-webkit-scrollbar,
+.ia-arsenal-grid::-webkit-scrollbar,
+.ia-cos-page::-webkit-scrollbar,
+.ia-shop-body::-webkit-scrollbar,
+.ia-ach-list::-webkit-scrollbar {
+  display: none; /* WebKit */
 }
 .ia-node {
   flex: 0 0 auto;
@@ -634,4 +669,348 @@
   color: var(--ia-dim);
   font-size: 12px;
   margin-top: 2px;
+}
+
+/* --- Money readout (main menu, top-right) ------------------------------- */
+.ia-money {
+  position: fixed;
+  top: 20px;
+  right: 26px;
+  font-family: var(--ia-title-font);
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--ia-gold);
+  pointer-events: none;
+}
+
+/* --- Side stack (Achievements + TEST, left-middle) + badge ------------- */
+.ia-side-stack {
+  position: fixed;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none; /* buttons re-enable */
+}
+.ia-side-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 16px;
+  background: var(--ia-btn);
+  border: 3px solid var(--ia-btn-edge);
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--ia-text);
+  font-family: var(--ia-ui-font);
+  pointer-events: auto;
+  transition: background 0.12s ease, transform 0.06s ease;
+}
+.ia-side-btn:hover {
+  background: var(--ia-btn-hover);
+}
+.ia-side-btn:active {
+  transform: scale(0.97);
+}
+/* Developer TEST button — gold-accented so it reads as a dev tool. */
+.ia-test-btn {
+  border-color: var(--ia-gold-edge);
+}
+.ia-test-btn .ia-side-label {
+  color: var(--ia-gold);
+  letter-spacing: 1px;
+}
+.ia-side-btn > span:first-child {
+  font-size: 26px;
+}
+.ia-side-label {
+  font-size: 12px;
+  font-weight: 700;
+}
+.ia-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: var(--ia-danger);
+  color: #fff;
+  border-radius: 11px;
+  padding: 1px 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.ia-badge.ia-hidden {
+  display: none;
+}
+
+/* --- Shop -------------------------------------------------------------- */
+.ia-shop-panel {
+  width: min(92vw, 640px);
+}
+.ia-shop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  max-height: 64vh;
+}
+.ia-shop-h {
+  font-family: var(--ia-title-font);
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+.ia-shop-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.ia-shop-card {
+  background: #1a1a22;
+  border: 3px solid var(--ia-btn-edge);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.ia-shop-cardart {
+  width: 100%;
+  height: 64px;
+  background: #14141a;
+  border-radius: 8px;
+}
+.ia-shop-soon {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ia-dim);
+}
+
+/* --- Achievements ------------------------------------------------------ */
+.ia-ach-panel {
+  width: min(92vw, 520px);
+}
+.ia-ach-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.ia-ach-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1a1a22;
+  border: 3px solid var(--ia-btn-edge);
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.ia-ach-card:hover {
+  background: #20202a;
+}
+.ia-ach-card:active {
+  transform: translateY(2px);
+}
+.ia-ach-card.ia-done {
+  border-color: var(--ia-gold-edge);
+}
+.ia-ach-name {
+  font-weight: 700;
+}
+.ia-ach-status {
+  color: var(--ia-dim);
+  font-weight: 700;
+}
+.ia-ach-status.ia-done {
+  color: var(--ia-gold);
+}
+.ia-ach-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  text-align: center;
+}
+.ia-ach-dtitle {
+  font-family: var(--ia-title-font);
+  margin: 0;
+}
+.ia-ach-ddesc {
+  color: var(--ia-dim);
+  margin: 0;
+}
+.ia-ach-dreward {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ia-ach-bar {
+  width: 80%;
+  height: 10px;
+  background: #2a2a33;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.ia-ach-bar-fill {
+  height: 100%;
+  background: var(--ia-accent);
+}
+.ia-ach-state {
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--ia-dim);
+}
+.ia-ach-state.ia-done {
+  color: #76d672;
+}
+.ia-reward-money {
+  color: var(--ia-gold);
+  font-weight: 800;
+}
+.ia-reward-title {
+  font-weight: 800;
+}
+
+/* Reward cards (achievements detail + completion toast; Arsenal-style). */
+.ia-reward-cards {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.ia-reward-card {
+  min-width: 84px;
+  background: #1a1a22;
+  border: 3px solid var(--ia-btn-edge);
+  border-radius: 10px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: default;
+  transition: border-color 0.12s ease, transform 0.06s ease;
+}
+.ia-reward-card:hover {
+  border-color: var(--ia-accent);
+  transform: translateY(-1px);
+}
+.ia-rc-value {
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+}
+.ia-rc-type {
+  font-size: 11px;
+  color: var(--ia-dim);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* --- Achievement completion toast (top-center) ------------------------- */
+.ia-toast {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translate(-50%, -130%);
+  transition: transform 0.35s ease, opacity 0.35s ease;
+  opacity: 0;
+  z-index: 60;
+  /* NOTE: the toast is a direct child of <body>, so it must set its own font —
+     otherwise its text inherits the browser default (serif). */
+  font-family: var(--ia-ui-font);
+  background: #23232e;
+  border: 3px solid #0c0c12;
+  border-top: 4px solid var(--ia-gold); /* clear gold accent bar up top */
+  border-radius: 0 0 14px 14px;
+  padding: 14px 28px 16px;
+  text-align: center;
+  min-width: 300px;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.ia-toast.ia-show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+.ia-toast-head {
+  font-family: var(--ia-ui-font);
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ia-gold);
+  font-size: 13px;
+}
+.ia-toast-name {
+  font-family: var(--ia-title-font);
+  font-weight: 800;
+  font-size: 24px;
+  letter-spacing: 0.5px;
+  color: #ffffff;
+  margin-top: 4px;
+}
+.ia-toast-desc {
+  font-family: var(--ia-ui-font);
+  color: var(--ia-dim);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.ia-toast-reward {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  align-items: center;
+  margin-top: 10px;
+}
+.ia-toast-reward .ia-k {
+  font-family: var(--ia-ui-font);
+  color: var(--ia-dim);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* --- Iron Path node previews (title / coin) ---------------------------- */
+.ia-node-title {
+  font-weight: 800;
+  font-size: 12px;
+}
+.ia-node-coin {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--ia-gold);
+  color: #5a4500;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Locked / "unlock more" cosmetics placeholders --------------------- */
+.ia-cos-locked {
+  opacity: 0.55;
+  cursor: default;
+}
+.ia-cos-qmark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-weight: 800;
+  font-size: 18px;
+  color: var(--ia-dim);
+}
+.ia-swatch-circle.ia-cos-locked {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #23232c;
+  color: var(--ia-dim);
+  font-weight: 800;
 }

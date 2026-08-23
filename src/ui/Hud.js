@@ -19,6 +19,14 @@ export class Hud {
     this.view = new Container();
     app.stage.addChild(this.view);
 
+    // Toxic-fog warning: a red edge vignette that pulses while outside the safe
+    // zone. Behind everything else so HUD text stays readable.
+    this.fogWarn = new Graphics();
+    this.fogWarn.alpha = 0;
+    this.view.addChild(this.fogWarn);
+    this._fogShown = 0;
+    this._warnT = 0;
+
     // top-left stack
     this.score = this.#text(24, "bold", COLORS.hudText);
     this.alive = this.#text(17, "bold", COLORS.hudText);
@@ -30,7 +38,11 @@ export class Hud {
     this.hpText = this.#text(12, "bold", COLORS.hudText);
     this.hpText.anchor.set(0.5);
 
-    this.view.addChild(this.score, this.alive, this.fps, this.hpBg, this.hpFill, this.hpText);
+    // contextual prompt (e.g. "PRESS [F] TO SWAP"), centered above the HP bar
+    this.prompt = this.#text(16, "bold", COLORS.hudText);
+    this.prompt.anchor.set(0.5);
+
+    this.view.addChild(this.score, this.alive, this.fps, this.hpBg, this.hpFill, this.hpText, this.prompt);
 
     this._hpShown = 1; // animated bar fill
 
@@ -48,6 +60,9 @@ export class Hud {
     const W = this.app.screen.width;
     const H = this.app.screen.height;
 
+    // Red edge band drawn inside the screen edges (alpha animated in update()).
+    this.fogWarn.clear().rect(0, 0, W, H).stroke({ color: 0xff2e2e, width: 110, alpha: 1, alignment: 0 });
+
     this.score.position.set(16, 12);
     this.alive.position.set(16, 46);
     this.fps.position.set(16, 72);
@@ -57,13 +72,25 @@ export class Hud {
     this.hpBg.position.set(cx, hpY);
     this.hpFill.position.set(cx, hpY);
     this.hpText.position.set(W / 2, hpY + HP_H / 2);
+    this.prompt.position.set(W / 2, hpY - 28);
   }
 
-  // s: { hp, maxHp, score, alive, fps, showFps }
+  // Show a contextual prompt above the HP bar, or clear it with null/"".
+  setPrompt(text) {
+    this.prompt.text = text || "";
+  }
+
+  // s: { hp, maxHp, score, alive, fps, showFps, fogWarning }
   update(s, dt) {
     const hpTarget = Math.max(0, s.hp / s.maxHp);
     this._hpShown += (hpTarget - this._hpShown) * (1 - Math.exp(-12 * dt));
     this.hpFill.scale.x = Math.max(0, this._hpShown);
+
+    // Fog warning vignette: ease presence toward on/off, and pulse while on.
+    this._warnT += dt;
+    this._fogShown += ((s.fogWarning ? 1 : 0) - this._fogShown) * (1 - Math.exp(-8 * dt));
+    const pulse = 0.55 + 0.45 * Math.abs(Math.sin(this._warnT * 4));
+    this.fogWarn.alpha = this._fogShown * pulse;
 
     this.score.text = `Score: ${s.score}`;
     this.alive.text = `Alive: ${s.alive}`;

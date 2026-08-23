@@ -7,6 +7,7 @@ import "./ui/overlay.css";
 import { Engine } from "./engine/Engine.js";
 import { Input } from "./engine/Input.js";
 import { GameFlow } from "./game/GameFlow.js";
+import { installDevTools } from "./game/ai/trainer/dev.js";
 
 async function start() {
   const engine = new Engine();
@@ -17,6 +18,10 @@ async function start() {
 
   // Dev-only debug handle (stripped from production builds).
   if (import.meta.env.DEV) window.__game = { engine, input, flow, game: flow.game };
+
+  // Dev-only bot AI tools: window.__ironTrain (evolutionary training) +
+  // window.__botDebug (decision explanations). Never part of the player UI.
+  installDevTools();
 }
 
 start();

@@ -61,14 +61,17 @@ export class Tank {
     this.barrelLength = radius * 2.2; // muzzle distance from center (for spawning bullets)
     this._fireTimer = 0; // counts down to next allowed shot
     this._flash = 0; // counts down the hit-punch animation
+    this._hitTimer = 0; // >0 = recently took damage (used by bot target scoring)
     this.dead = false;
 
     // Movement feel: carry momentum (velocity eased toward the desired vector).
     this.accel = accel;
     this.vx = 0;
     this.vy = 0;
+    this.moveScale = 1; // transient speed multiplier (e.g. slowed while firing a laser)
     // Turret recoil (visual only): barrels slide back on fire, then recover.
     this._recoil = 0;
+    this.recoilAmount = null; // per-weapon kick distance (falls back to player default)
 
     this.view = new Container();
     this.body = new Container(); // holds barrels + circle + wrap; this is what rotates
@@ -87,6 +90,7 @@ export class Tank {
   update(dt) {
     if (this._fireTimer > 0) this._fireTimer -= dt;
     if (this._flash > 0) this._flash -= dt;
+    if (this._hitTimer > 0) this._hitTimer -= dt;
     if (this._recoil > 0) this._recoil *= Math.exp(-GAME.player.recoilRecover * dt);
 
     this.healthBar.set(this.hp / this.maxHp);
@@ -112,8 +116,9 @@ export class Tank {
     // Ease the velocity toward the desired vector so the tank accelerates,
     // decelerates, and carries a little momentum instead of snapping.
     const k = 1 - Math.exp(-this.accel * dt);
-    this.vx += (move.x * this.speed - this.vx) * k;
-    this.vy += (move.y * this.speed - this.vy) * k;
+    const spd = this.speed * this.moveScale;
+    this.vx += (move.x * spd - this.vx) * k;
+    this.vy += (move.y * spd - this.vy) * k;
     this.x += this.vx * dt;
     this.y += this.vy * dt;
 
@@ -133,7 +138,7 @@ export class Tank {
   tryFire() {
     if (this._fireTimer > 0) return null;
     this._fireTimer = this.fireRate;
-    this._recoil = GAME.player.recoil; // visual barrel kick
+    this._recoil = this.recoilAmount ?? GAME.player.recoil; // per-weapon visual kick
     return {
       x: this.x + Math.cos(this.rotation) * this.barrelLength,
       y: this.y + Math.sin(this.rotation) * this.barrelLength,
@@ -141,9 +146,14 @@ export class Tank {
     };
   }
 
-  takeDamage(amount) {
-    this.hp = Math.max(0, this.hp - amount * (1 - this.armor));
+  // `armorMul` scales how effective this tank's armor is against THIS hit:
+  //   < 1 = armor-piercing attacker (Sniper/Railgun); > 1 = armor-vulnerable
+  //   damage (Laser). Defaults to normal armor.
+  takeDamage(amount, armorMul = 1) {
+    const armor = Math.min(0.9, this.armor * armorMul);
+    this.hp = Math.max(0, this.hp - amount * (1 - armor));
     this._flash = FLASH_DURATION;
+    this._hitTimer = 1.5; // mark "recently in combat" for ~1.5s
   }
 
   // Builds the tank's geometry once. Barrels first (in their own container) so
@@ -177,7 +187,10 @@ export class Tank {
     this.barrels.removeChildren().forEach((c) => c.destroy());
     for (const b of turretBarrels(turret, this.radius)) {
       const g = graphics();
-      g.rect(0, -b.width / 2, b.length, b.width)
+      const w0 = b.w0 ?? b.width; // base width
+      const w1 = b.w1 ?? b.width; // muzzle width (differs -> trapezoid)
+      const s = b.start ?? 0; // base offset from center (detached muzzle blocks)
+      g.poly([s, -w0 / 2, s + b.length, -w1 / 2, s + b.length, w1 / 2, s, w0 / 2])
         .fill(COLORS.tankBarrel)
         .stroke({ color: darken(COLORS.tankBarrel), width: 4, alignment: 0.5 });
       g.rotation = b.angle;
@@ -191,6 +204,14 @@ export class Tank {
   // player loadout). `weapon` is a GAME.weapons entry.
   setWeapon(weapon) {
     this.#buildTurret(weapon?.turret || "single");
+    this.setBarrelHeat(0); // clear any laser heat tint from a previous weapon
+  }
+
+  // Tint the barrels toward red to show laser heat (t: 0 = cool .. 1 = overheated).
+  setBarrelHeat(t) {
+    const k = Math.max(0, Math.min(1, t));
+    const g = Math.round(0xff * (1 - k)); // fade green+blue channels toward 0
+    this.barrels.tint = (0xff << 16) | (g << 8) | g;
   }
 
   // Live-change the body color (used by the cosmetics picker in the waiting room).

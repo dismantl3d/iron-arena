@@ -81,13 +81,17 @@ function wrapShapes(pattern, color, clipId) {
   return `<g clip-path="url(#${clipId})">${inner}</g>`;
 }
 
-// Four corners of one barrel rect, transformed exactly like the Pixi version.
+// Four corners of one barrel quad (trapezoid), transformed exactly like the Pixi
+// version — w0 at the base, w1 at the muzzle.
 function barrelPoints(b) {
+  const w0 = b.w0 ?? b.width;
+  const w1 = b.w1 ?? b.width;
+  const st = b.start ?? 0;
   const local = [
-    [0, -b.width / 2],
-    [b.length, -b.width / 2],
-    [b.length, b.width / 2],
-    [0, b.width / 2],
+    [st, -w0 / 2],
+    [st + b.length, -w1 / 2],
+    [st + b.length, w1 / 2],
+    [st, w0 / 2],
   ];
   const ox = -Math.sin(b.angle) * b.perp;
   const oy = Math.cos(b.angle) * b.perp;

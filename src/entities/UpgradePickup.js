@@ -11,7 +11,7 @@ import { RARITY_COLOR } from "../game/upgrades.js";
 const SPECIAL_COLOR = 0xffd24a;
 
 export class UpgradePickup {
-  constructor({ x, y, kind, typeKey, rarity = 0 }) {
+  constructor({ x, y, kind, typeKey, rarity = 0, vx = 0, vy = 0, pickupDelay = 0 }) {
     this.x = x;
     this.y = y;
     this.kind = kind; // "normal" | "special"
@@ -20,6 +20,11 @@ export class UpgradePickup {
     this.radius = kind === "special" ? 26 : 22; // collection radius
     this.collected = false;
     this.dead = false;
+    this.ghost = false; // true when redundant (already owned) — drawn translucent
+    // Scattered pickups (crate loot / swapped specials) fling outward, then rest.
+    this.vx = vx;
+    this.vy = vy;
+    this.pickupDelay = pickupDelay; // seconds before it can be collected
     this._t = Math.random() * Math.PI * 2; // bob phase
 
     const r = this.radius;
@@ -40,11 +45,31 @@ export class UpgradePickup {
 
   update(dt) {
     this._t += dt * 3;
+    if (this.pickupDelay > 0) this.pickupDelay -= dt;
+    // Fling outward with friction until it settles.
+    if (this.vx || this.vy) {
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      const drag = Math.exp(-6 * dt);
+      this.vx *= drag;
+      this.vy *= drag;
+      if (Math.hypot(this.vx, this.vy) < 6) {
+        this.vx = 0;
+        this.vy = 0;
+      }
+    }
+  }
+
+  // Can the player collect this yet? (Freshly scattered loot has a short delay.)
+  get collectable() {
+    return this.pickupDelay <= 0;
   }
 
   syncView() {
     this.view.position.set(this.x, this.y);
-    this.view.scale.set(1 + Math.sin(this._t) * 0.06); // gentle pulse
+    // Redundant pickups (already owned) are ghosted and don't pulse.
+    this.view.alpha = this.ghost ? 0.35 : 1;
+    this.view.scale.set(this.ghost ? 1 : 1 + Math.sin(this._t) * 0.06);
   }
 }
 

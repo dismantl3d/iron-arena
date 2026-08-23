@@ -17,6 +17,11 @@ import { DeathScreen } from "../ui/DeathScreen.js";
 import { WinnerScreen } from "../ui/WinnerScreen.js";
 import { ArsenalPanel, IronPathPanel } from "../ui/LockerPanels.js";
 import { CosmeticsPanel } from "../ui/CosmeticsPanel.js";
+import { ShopPanel } from "../ui/ShopPanel.js";
+import { AchievementsPanel } from "../ui/AchievementsPanel.js";
+import { AchievementToast } from "../ui/AchievementToast.js";
+import { GAME } from "../config.js";
+import { ACHIEVEMENTS } from "./achievements.js";
 
 export class GameFlow {
   constructor(engine, input) {
@@ -28,11 +33,14 @@ export class GameFlow {
     // above it; only one base screen + at most one panel is ever visible.
     this._screen = "menu";
 
+    this.toast = new AchievementToast();
+
     this.game = new Game(engine, input, {
       onCountdown: (s) => this.waiting.setCountdown(s),
       onMatchStart: () => this.#onMatchStart(),
       onMatchEnd: (stats) => this.#onMatchEnd(stats),
       onWin: (stats) => this.winnerScreen.show(stats),
+      onAchievements: (def) => this.toast.push(def),
     });
 
     // Customization panels (shared by the menu and the waiting room). Their Back
@@ -50,12 +58,24 @@ export class GameFlow {
     );
     this.arsenal = new ArsenalPanel(this.profile, (i) => this.#select("weapon", "setWeapon", i), () => this.#backFromPanel());
     this.ironPath = new IronPathPanel(this.profile, () => this.#backFromPanel());
+    this.shop = new ShopPanel(() => this.#backFromPanel());
+    this.achievements = new AchievementsPanel(
+      this.profile,
+      () => this.#backFromPanel(),
+      () => {
+        this.profile.save();
+        this.menu.refresh();
+      },
+    );
 
     this.menu = new MainMenu(this.profile, {
       onPlay: () => this.#play(),
       onIronPath: () => this.#openPanel(this.ironPath),
       onCosmetics: () => this.#openPanel(this.cosmetics),
       onArsenal: () => this.#openPanel(this.arsenal),
+      onShop: () => this.#openPanel(this.shop),
+      onAchievements: () => this.#openPanel(this.achievements),
+      onTest: () => this.#devUnlockAll(),
     });
     this.waiting = new WaitingRoom({
       onCosmetics: () => this.#openPanel(this.cosmetics),
@@ -134,5 +154,21 @@ export class GameFlow {
     this.cosmetics.hide();
     this.arsenal.hide();
     this.ironPath.hide();
+    this.shop.hide();
+    this.achievements.hide();
+  }
+
+  // Developer TEST mode: unlock everything (weapons via a maxed Iron Path,
+  // cosmetics via the devUnlockAll flag), complete all achievements, and grant a
+  // large amount of money. The menu updates immediately; the Cosmetics/Arsenal
+  // panels re-render from the new profile state the next time they're opened.
+  #devUnlockAll() {
+    const p = this.profile;
+    p.devUnlockAll = true;
+    p.ironPathXp = GAME.ironPath.maxLevel * GAME.ironPath.xpPerLevel; // complete the Iron Path
+    for (const a of ACHIEVEMENTS) p.achievements[a.id] = { progress: a.goal, completed: true, seen: true };
+    p.money += 100000;
+    p.save();
+    this.menu.refresh();
   }
 }

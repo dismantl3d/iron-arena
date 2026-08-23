@@ -16,10 +16,18 @@ const HEX = 40; // special hex slot size (point-to-point)
 const MARGIN = 16;
 const EMPTY = 0x33333d;
 
+// While the Laser Rifle is equipped, two normal upgrades are re-purposed (their
+// EFFECT is re-mapped in Game.#applyStats; here we just relabel their tooltips).
+const LASER_REMAP = {
+  bulletSpeed: { name: "Laser Damage", effect: "Increase Laser damage per tick." },
+  reloadSpeed: { name: "Laser Lethality", effect: "Decrease the delay between Laser damage ticks." },
+};
+
 export class UpgradeHud {
   constructor(app) {
     this.app = app;
     this.state = null;
+    this.laserMode = false; // relabel bulletSpeed/reloadSpeed as Laser upgrades
 
     this.view = new Container();
     app.stage.addChild(this.view);
@@ -109,15 +117,21 @@ export class UpgradeHud {
     });
   }
 
+  // Toggle Laser-Rifle labels for the re-purposed upgrade slots.
+  setLaserMode(on) {
+    this.laserMode = !!on;
+  }
+
   #showTip(slot) {
     const t = this.tooltip;
     let name, type, effect;
     if (slot.kind === "normal") {
       const def = NORMAL_TYPES.find((x) => x.key === slot.id);
+      const remap = this.laserMode ? LASER_REMAP[slot.id] : null;
       const r = this.state?.normals[slot.id];
-      name = def.name;
+      name = remap ? remap.name : def.name;
       type = r !== undefined ? `Upgrade · ${RARITIES[r]}` : "Upgrade";
-      effect = def.effect;
+      effect = remap ? remap.effect : def.effect;
     } else {
       const key = this.state?.specials[slot.id];
       if (key) {
