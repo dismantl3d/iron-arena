@@ -17,8 +17,12 @@
 // later phases (each entity already carries a `type`, `weapon`, and stat fields so
 // those layers slot in without reshaping the model).
 
+import { GAME } from "../config.js";
 import { SIM } from "./constants.js";
 import { integrateMovement, muzzle, stepBullet, circleOverlap, clampAxis, num } from "./physics.js";
+import { resolveEntityStats } from "./upgradeStats.js";
+import { UpgradeState } from "./UpgradeState.js";
+import { FogModel } from "./FogModel.js";
 
 export class WorldModel {
   constructor(opts = {}) {
@@ -30,6 +34,9 @@ export class WorldModel {
     this.time = 0; // seconds since the model started stepping
 
     this._bulletSeq = 0;
+    // Optional authoritative toxic-fog/zone (opt-in so callers that don't want it —
+    // e.g. the Phase-1 server test match — behave exactly as before).
+    this.fog = opts.fog ? new FogModel() : null;
     // Optional callback: ({ victim, killer }) when an entity is eliminated.
     this.onKill = opts.onKill ?? null;
     // How a fresh entity is placed; overridable so callers can use game spawn rules.
@@ -57,6 +64,7 @@ export class WorldModel {
       alive: true,
       input: { mx: 0, my: 0, aim: 0, fire: false },
       fireCd: 0,
+      upgrades: new UpgradeState(), // collected upgrades → resolveStats()
       // resolved stats (Standard baseline; upgrade/weapon layers may override these)
       speed: SIM.speed,
       accel: SIM.accel,
@@ -89,6 +97,22 @@ export class WorldModel {
     e.input.fire = !!fire;
   }
 
+  // Resolve an entity's effective combat stats from its weapon + collected upgrades
+  // (the SAME authoritative resolver the client uses). Call after collecting a
+  // pickup so the model reflects upgrade effects. No new upgrade types.
+  resolveStats(id) {
+    const e = this.entities.get(id);
+    if (!e) return;
+    const w = GAME.weapons[e.weapon] || GAME.weapons[0];
+    const s = resolveEntityStats(w, e.upgrades.normals);
+    e.speed = s.speed;
+    e.cooldown = s.fireRate;
+    e.damage = s.bulletDamage;
+    e.bulletSpeed = s.bulletSpeed;
+    e.bulletLife = s.bulletLife;
+    e.armor = s.armor;
+  }
+
   // Respawn a dead entity at a fresh spawn with full HP.
   respawn(id) {
     const e = this.entities.get(id);
@@ -116,6 +140,23 @@ export class WorldModel {
 
     // 2) Projectiles + authoritative collision → damage → death.
     this.#stepBullets(dt);
+
+    // 3) Toxic fog/zone (only when enabled) — shrink the zone + damage anyone
+    //    outside it. Off by default so the Phase-1 server behaves unchanged.
+    if (this.fog) this.#stepFog(dt);
+  }
+
+  #stepFog(dt) {
+    this.fog.update(dt);
+    const dps = GAME.fog.dps * dt;
+    for (const e of this.entities.values()) {
+      if (!e.alive || !this.fog.isOutside(e.x, e.y)) continue;
+      e.hp = Math.max(0, e.hp - dps);
+      if (e.hp <= 0) {
+        e.alive = false;
+        this.onKill?.({ victim: e.id, killer: null }); // fog kill (no killer)
+      }
+    }
   }
 
   #fire(e) {

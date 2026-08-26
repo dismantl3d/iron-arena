@@ -34,6 +34,7 @@ import { pickSavedPolicy } from "./ai/trainer/evolve.js";
 import { makeNameGen } from "./ai/names.js";
 import { GuardianBrain } from "./GuardianBrain.js";
 import { circleOverlap } from "../sim/physics.js";
+import { resolveEntityStats } from "../sim/upgradeStats.js";
 import { Fog } from "./Fog.js";
 import { UpgradeState } from "./UpgradeState.js";
 import { earnedXp } from "./IronPath.js";
@@ -43,9 +44,7 @@ import {
   NORMAL_TYPES,
   SPECIALS,
   RARITY_COLOR,
-  RARITY_MUL,
   pickRarity,
-  deriveUpgradeStats,
 } from "./upgrades.js";
 import { Hud } from "../ui/Hud.js";
 import { UpgradeHud } from "../ui/UpgradeHud.js";
@@ -457,38 +456,26 @@ export class Game {
     const p = this.player;
     if (!p) return;
     const w = this.weapon || {};
-    const u = deriveUpgradeStats(this.upgrades.normals);
-    const shot0 = w.shots?.[0];
+    // Authoritative stat resolution now lives in the sim layer (src/sim).
+    const s = resolveEntityStats(w, this.upgrades.normals);
 
-    p.speed = GAME.player.speed * u.speedMul * (w.moveMul || 1);
+    p.speed = s.speed;
     p.moveScale = 1;
-    p.armor = u.armor;
-    p.recoilAmount = w.recoil ?? GAME.player.recoil;
-    // Fire interval (laser is continuous, so cooldown 0). Reload upgrades shorten it.
-    p.fireRate = (w.cooldown ?? GAME.player.fireRate) * u.fireRateMul;
+    p.armor = s.armor;
+    p.recoilAmount = s.recoilAmount;
+    p.fireRate = s.fireRate; // laser is continuous (cooldown 0); reload upgrades shorten it
 
     // Default projectile stats (used by the player's shots + drone bullets).
-    this._bulletSpeed = (w.bulletSpeed ?? GAME.bullet.speed) * u.bulletSpeedMul;
-    this._bulletLife = (w.bulletLife ?? GAME.bullet.life) * u.bulletLifeMul;
-    this._bulletRadius = w.bulletRadius ?? GAME.bullet.radius;
-    this._bulletDamage = shot0?.damage ?? GAME.bullet.damage;
-    this._armorMul = 1 - (w.armorPen || 0); // <1 pierces armor
+    this._bulletSpeed = s.bulletSpeed;
+    this._bulletLife = s.bulletLife;
+    this._bulletRadius = s.bulletRadius;
+    this._bulletDamage = s.bulletDamage;
+    this._armorMul = s.armorMul; // <1 pierces armor
+    this._laser = s.laser; // Bullet-Speed/Reload re-purposed as Laser Damage/Lethality
 
-    // Laser: its Bullet-Speed / Reload pickups are re-purposed as Laser Damage /
-    // Laser Lethality (local to laser users); other weapons are unaffected.
-    if (w.fireMode === "laser") {
-      const raw = (key) => (key in this.upgrades.normals ? RARITY_MUL[this.upgrades.normals[key]] : 0);
-      const L = w.laser;
-      this._laser = {
-        tickDamage: L.tickDamage + 1 * raw("bulletSpeed"), // +1 dmg/tick per level
-        tickRate: L.tickRate * Math.max(0.4, 1 - 0.05 * raw("reloadSpeed")), // faster ticks
-      };
-    } else {
-      this._laser = null;
-    }
-    // Relabel the two re-purposed upgrade slots when the Laser is equipped.
+    // Client-only presentation: relabel the two re-purposed slots for the Laser, and
+    // apply the Sniper FOV zoom-out.
     this.upgradeHud.setLaserMode(w.fireMode === "laser");
-    // Sniper widens the view (increased FOV) via a slight camera zoom-out.
     this.engine.camera.zoom = w.fovMul ?? 1;
   }
 
@@ -1118,22 +1105,22 @@ export class Game {
   // Every upgrade the bot collects flows through here into its real gameplay stats.
   #applyBotStats(bot) {
     const w = GAME.weapons[0]; // Standard — the shared player/bot baseline
-    const u = deriveUpgradeStats(bot.upgrades.normals);
-    const shot0 = w.shots?.[0];
+    // Same authoritative sim resolver the player uses (no parallel bot stat set).
+    const s = resolveEntityStats(w, bot.upgrades.normals);
 
     bot.maxHp = GAME.player.maxHp; // (no HP upgrade type exists) — matches player
     if (bot.hp > bot.maxHp) bot.hp = bot.maxHp;
     bot.turnRate = GAME.player.turnRate;
     bot.accel = GAME.player.accel;
-    bot.recoilAmount = w.recoil ?? GAME.player.recoil;
-    bot.speed = GAME.player.speed * u.speedMul * (w.moveMul || 1);
-    bot.armor = u.armor;
-    bot.fireRate = (w.cooldown ?? GAME.player.fireRate) * u.fireRateMul;
-    bot._bulletSpeed = (w.bulletSpeed ?? GAME.bullet.speed) * u.bulletSpeedMul;
-    bot._bulletLife = (w.bulletLife ?? GAME.bullet.life) * u.bulletLifeMul;
-    bot._bulletRadius = w.bulletRadius ?? GAME.bullet.radius;
-    bot._bulletDamage = shot0?.damage ?? GAME.bullet.damage;
-    bot._armorMul = 1 - (w.armorPen || 0);
+    bot.recoilAmount = s.recoilAmount;
+    bot.speed = s.speed;
+    bot.armor = s.armor;
+    bot.fireRate = s.fireRate;
+    bot._bulletSpeed = s.bulletSpeed;
+    bot._bulletLife = s.bulletLife;
+    bot._bulletRadius = s.bulletRadius;
+    bot._bulletDamage = s.bulletDamage;
+    bot._armorMul = s.armorMul;
 
     // Build-aware positioning: a bot's preferred engagement distance tracks its
     // ACTUAL projectile reach, so bullet-speed/range upgrades naturally push it to

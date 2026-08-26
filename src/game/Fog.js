@@ -1,88 +1,48 @@
-// Toxic fog: a circular safe zone (centered on the arena) that shrinks in TIMED
-// STAGES — it holds still for `holdTime`, contracts to the next radius over
-// `shrinkTime`, then holds again — so players can plan rotations. It STOPS at
-// `finalRadius` (a proper final-battle zone), so the match ends through combat
-// rather than endless fog. Anything outside the safe radius takes damage.
-//
-// `radius` is the current safe zone; `nextRadius` is where the NEXT shrink will
-// land (null once the final zone is reached) — the minimap draws it dashed so
-// players can pre-rotate.
+// Toxic fog — the CLIENT view. The authoritative zone state (radius, staged shrink
+// cycle, final zone, isOutside) now lives in the renderer-free src/sim/FogModel;
+// this class just owns a Pixi `view` and DRAWS the safe-zone rings from the model.
+// It re-exposes the model's fields (radius/nextRadius/timer/state) so Game.js and
+// the minimap keep using `this.fog.*` exactly as before.
 
 import { Graphics } from "pixi.js";
 import { GAME } from "../config.js";
+import { FogModel } from "../sim/FogModel.js";
 
 export class Fog {
   constructor() {
+    this.model = new FogModel();
     this.view = new Graphics();
-    this.reset();
+    this.#draw();
   }
+
+  // Authoritative state, delegated to the sim model (read-only from the client).
+  get radius() { return this.model.radius; }
+  get nextRadius() { return this.model.nextRadius; }
+  get timer() { return this.model.timer; }
+  get state() { return this.model.state; }
+  get stage() { return this.model.stage; }
 
   reset() {
-    this.stage = 0; // completed shrink stages
-    this.state = "holding"; // "holding" | "shrinking"
-    this.timer = GAME.fog.holdTime;
-    this.radius = GAME.fog.startRadius;
-    this.from = this.radius;
-    this.to = this.radius;
-    this.nextRadius = this.#target(1);
+    this.model.reset();
     this.#draw();
   }
 
-  // The safe radius after `n` completed shrink stages (linear from start->final).
-  #target(n) {
-    const { startRadius, finalRadius, stages } = GAME.fog;
-    if (n >= stages) return finalRadius;
-    return startRadius + (finalRadius - startRadius) * (n / stages);
-  }
-
-  // `mul` accelerates the whole cycle during the endgame (see GAME.endgame): the
-  // holds are shorter and the contractions quicker as the roster thins.
   update(dt, mul = 1) {
-    if (this.stage >= GAME.fog.stages) {
-      this.nextRadius = null; // final zone reached — no more shrinking
-      return;
-    }
-
-    this.timer -= dt * mul;
-    if (this.state === "holding") {
-      if (this.timer <= 0) {
-        this.state = "shrinking";
-        this.from = this.radius;
-        this.to = this.#target(this.stage + 1);
-        this.timer = GAME.fog.shrinkTime;
-      }
-    } else {
-      // ease the radius from `from` to `to` across the shrink window
-      const t = 1 - Math.max(0, this.timer) / GAME.fog.shrinkTime;
-      this.radius = this.from + (this.to - this.from) * t;
-      if (this.timer <= 0) {
-        this.radius = this.to;
-        this.stage += 1;
-        this.state = "holding";
-        this.timer = GAME.fog.holdTime;
-      }
-    }
-
-    this.nextRadius =
-      this.stage >= GAME.fog.stages
-        ? null
-        : this.state === "shrinking"
-          ? this.to
-          : this.#target(this.stage + 1);
+    this.model.update(dt, mul);
     this.#draw();
   }
 
-  // Is the world point outside the safe zone (i.e. taking fog damage)?
   isOutside(x, y) {
-    return x * x + y * y > this.radius * this.radius;
+    return this.model.isOutside(x, y);
   }
 
   #draw() {
+    const r = this.model.radius;
     this.view
       .clear()
-      .circle(0, 0, this.radius)
+      .circle(0, 0, r)
       .stroke({ color: GAME.fog.color, width: 60, alpha: 0.28 }) // hazy band
-      .circle(0, 0, this.radius)
+      .circle(0, 0, r)
       .stroke({ color: GAME.fog.color, width: 6, alpha: 0.9 }); // crisp edge
   }
 }

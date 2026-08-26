@@ -1,13 +1,18 @@
 // Data + helpers for the in-match upgrade system (collected as world pickups,
 // not bought in a menu). Pure data — no rendering or game state here.
+//
+// The authoritative stat-resolution (RARITY_MUL + deriveUpgradeStats) moved into
+// the renderer-free simulation layer (src/sim/upgradeStats.js) in Phase 14.2 Step 3;
+// it's re-exported here so existing importers keep working unchanged.
 
 import { WORLD } from "../config.js";
+// Pure re-export (not import-then-export — that trips Vite's dev transform into a
+// duplicate declaration). upgrades.js doesn't use these internally.
+export { RARITY_MUL, deriveUpgradeStats } from "../sim/upgradeStats.js";
 
 // Rarity ladder, low -> high. Index into this is a pickup's "rarity".
 export const RARITIES = ["Common", "Uncommon", "Rare", "Epic", "Legendary"];
 export const RARITY_COLOR = [0x9aa0b0, 0x76d672, 0x4aa3ff, 0xc26cff, 0xffd24a];
-// Effect scale per rarity (how strong a collected upgrade is).
-export const RARITY_MUL = [1, 1.6, 2.3, 3.2, 4.5];
 
 // Normal upgrade types. `key` is used everywhere; `name`/`effect` feed tooltips.
 export const NORMAL_TYPES = [
@@ -49,15 +54,4 @@ export function pickRarity(weights) {
   return weights.length - 1;
 }
 
-// Turn the player's collected normal upgrades { typeKey: rarityIndex } into
-// concrete stat multipliers applied on top of base stats.
-export function deriveUpgradeStats(normals) {
-  const mul = (key) => (key in normals ? RARITY_MUL[normals[key]] : 0);
-  return {
-    bulletSpeedMul: 1 + 0.12 * mul("bulletSpeed"),
-    bulletLifeMul: 1 + 0.15 * mul("bulletRange"),
-    fireRateMul: 1 / (1 + 0.1 * mul("reloadSpeed")), // smaller interval = faster
-    armor: Math.min(0.6, 0.08 * mul("tankArmor")), // fraction of damage blocked
-    speedMul: 1 + 0.07 * mul("moveSpeed"),
-  };
-}
+// (deriveUpgradeStats now lives in src/sim/upgradeStats.js — re-exported above.)
