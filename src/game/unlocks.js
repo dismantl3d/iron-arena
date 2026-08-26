@@ -1,21 +1,17 @@
 // Which cosmetics a profile has unlocked, DERIVED from progression (Iron Path
 // level + completed achievements) — never stored, so it can't go stale.
 //
-//   colors  — all unlocked (the base palette)
-//   wraps   — None (0) + any Iron Path wrap reward at/under the current level
-//   trails  — None (0) + any Iron Path trail reward at/under the current level
-//   killFx  — Burst (0) only (no early source yet)
-//   titles  — Iron Path title rewards (Noob L1, Rookie L5) + achievement titles
+// Index 0 of every category is the always-available default: Blue (colors),
+// None (wraps/trails), No Kill FX (killFx), No Title (titles). Everything else
+// comes from Iron Path rewards up to the current level (including the Level 60
+// bundle's contents) plus achievement titles.
 
 import { GAME } from "../config.js";
 import { ACHIEVEMENTS } from "./achievements.js";
 
-const REWARD_TYPE = { wraps: "wrap", trails: "trail", titles: "title" };
-
-// Returns a Set of unlocked indices for a cosmetic category
-// ("cosmetics" | "wraps" | "trails" | "killFx" | "titles").
-// Every index available for a category (used by developer TEST mode).
-const ALL = { cosmetics: "cosmetics", wraps: "wraps", trails: "trails", killFx: "killFx", titles: "titles" };
+// UI category -> the reward `type` that unlocks it.
+const REWARD_TYPE = { cosmetics: "color", wraps: "wrap", trails: "trail", killFx: "killfx", titles: "title" };
+const ALL = { cosmetics: 1, wraps: 1, trails: 1, killFx: 1, titles: 1 };
 
 export function unlockedIndices(profile, category) {
   const set = new Set();
@@ -26,21 +22,21 @@ export function unlockedIndices(profile, category) {
     return set;
   }
 
-  if (category === "cosmetics") {
-    GAME.cosmetics.forEach((_, i) => set.add(i));
-    return set;
-  }
+  // Index 0 is always available for every category (Blue / None / No Title).
+  set.add(0);
 
-  // The "none"/default option is always available for these.
-  if (category === "wraps" || category === "trails" || category === "killFx") set.add(0);
-
-  // Iron Path rewards earned up to the current level.
-  const level = profile.ironPathLevel;
   const wantType = REWARD_TYPE[category];
-  if (wantType) {
-    for (const [lvl, r] of Object.entries(GAME.ironPath.rewards || {})) {
-      if (Number(lvl) <= level && r.type === wantType && r.index != null) set.add(r.index);
-    }
+  if (!wantType) return set;
+
+  // Iron Path rewards earned up to the current level (bundles unpack their items).
+  const level = profile.ironPathLevel;
+  const add = (r) => {
+    if (r.type === wantType && r.index != null) set.add(r.index);
+  };
+  for (const [lvl, r] of Object.entries(GAME.ironPath.rewards || {})) {
+    if (Number(lvl) > level) continue;
+    if (r.type === "bundle") r.items?.forEach(add);
+    else add(r);
   }
 
   // Achievement title rewards.

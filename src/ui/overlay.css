@@ -601,6 +601,20 @@
   background-size: 200% 100%;
   animation: ia-hue 1.6s linear infinite;
 }
+.ia-trail-hologram {
+  background: linear-gradient(90deg, transparent, var(--c, #4ad6ff), transparent);
+  background-size: 40px 100%;
+  opacity: 0.85;
+  animation: ia-slide 0.7s linear infinite, ia-flicker 0.45s steps(2) infinite;
+}
+.ia-trail-trueSparks {
+  background-image: radial-gradient(circle, #ffd24a 1.6px, transparent 2.4px), radial-gradient(circle, #ff8a3a 1.4px, transparent 2.2px), radial-gradient(circle, #9aa0a6 1.4px, transparent 2.2px);
+  background-size: 12px 100%, 17px 100%, 21px 100%;
+  animation: ia-slide 0.5s linear infinite;
+}
+@keyframes ia-flicker {
+  50% { opacity: 0.5; }
+}
 @keyframes ia-slide {
   from { background-position: -26px 0; }
   to { background-position: 26px 0; }
@@ -631,6 +645,11 @@
 .ia-killfx-explosion {
   background: radial-gradient(circle, #ffa53a 28%, #e2564b 52%, transparent 66%);
   animation: ia-pulse 0.7s ease-in-out infinite;
+}
+.ia-killfx-none {
+  background: #2a2a33;
+  border: 2px dashed #4a4a57;
+  box-sizing: border-box;
 }
 @keyframes ia-pulse {
   0%, 100% { transform: scale(0.8); }
@@ -670,6 +689,72 @@
   font-size: 12px;
   margin-top: 2px;
 }
+/* FX indicator row at the BOTTOM of a tooltip (only for FX items). */
+.ia-tip-fx {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid #2b2b38;
+  color: #ffd24a;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+.ia-tip-fx svg { filter: drop-shadow(0 0 2px rgba(255, 210, 74, 0.5)); }
+
+/* FX emphasis for cosmetic items (swatch ring / title glow / bundle name). */
+.ia-fx { text-shadow: 0 0 6px rgba(255, 210, 74, 0.45); }
+.ia-swatch-circle.ia-fx { box-shadow: 0 0 0 2px rgba(255, 210, 74, 0.7), 0 0 8px rgba(255, 210, 74, 0.5); }
+
+/* --- Level 60 bundle: node marker + preview panel ---------------------- */
+.ia-node.ia-bundle { border-color: #ffd24a; }
+.ia-node-bundle {
+  font-size: 24px;
+  color: #ffd24a;
+  text-shadow: 0 0 8px rgba(255, 210, 74, 0.6);
+}
+.ia-bundle-scrim { z-index: 60; }
+.ia-bundle-panel { min-width: 340px; text-align: center; }
+.ia-bundle-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+.ia-bundle-preview {
+  width: 190px;
+  height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #12121a;
+  border: 2px solid var(--ia-panel-edge);
+  border-radius: 12px;
+}
+.ia-bundle-preview .ia-node-art { width: 150px; height: 120px; }
+.ia-bundle-preview .ia-node-title { font-size: 20px; font-weight: 800; }
+.ia-bundle-preview .ia-node-coin { font-size: 44px; color: #ffd24a; font-weight: 800; }
+.ia-bundle-preview .ia-trail-demo { width: 130px; height: 16px; }
+.ia-bundle-preview .ia-killfx-demo { width: 64px; height: 64px; }
+.ia-bundle-arrow {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid var(--ia-panel-edge);
+  background: #1b1b24;
+  color: #fff;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ia-bundle-arrow:hover { background: #262633; }
+.ia-bundle-caption { margin: 6px 0 12px; }
+.ia-bundle-name { font-size: 20px; font-weight: 800; color: #fff; }
+.ia-bundle-type { font-size: 13px; color: var(--ia-dim); margin-top: 2px; }
 
 /* --- Money readout (main menu, top-right) ------------------------------- */
 .ia-money {
@@ -1013,4 +1098,79 @@
   background: #23232c;
   color: var(--ia-dim);
   font-weight: 800;
+}
+
+/* --- Multiplayer (Phase 1) dev overlay ---------------------------------- */
+.ia-mp-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+}
+.ia-mp-status {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: #12121aee;
+  border: 2px solid var(--ia-panel-edge);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: var(--ia-ui-font);
+  font-size: 12px;
+  color: #cfd3dc;
+  line-height: 1.5;
+}
+.ia-mp-status b { color: #4ad6ff; letter-spacing: 0.04em; }
+.ia-mp-exit {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  pointer-events: auto;
+  width: auto;
+  padding: 8px 18px;
+}
+.ia-mp-death {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 55;
+  background: #0008;
+  pointer-events: auto;
+}
+.ia-mp-death .ia-panel { min-width: 260px; text-align: center; }
+
+/* --- Death screen "KILLED BY" card ------------------------------------- */
+.ia-killedby {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin: 4px 0 10px;
+}
+.ia-killedby-label {
+  font-family: var(--ia-ui-font);
+  font-size: 12px;
+  letter-spacing: 3px;
+  color: var(--ia-dim);
+  font-weight: 700;
+}
+.ia-killedby-art {
+  width: 132px;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ia-killedby-name {
+  font-family: var(--ia-ui-font);
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+}
+.ia-killedby-title {
+  font-family: var(--ia-ui-font);
+  font-size: 14px;
+  font-weight: 700;
 }

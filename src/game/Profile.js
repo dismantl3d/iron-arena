@@ -39,11 +39,13 @@ export class Profile {
     const before = this.ironPathLevel;
     this.ironPathXp += Math.max(0, Math.round(amount));
     const after = this.ironPathLevel;
-    // Grant any Iron Path CURRENCY rewards for the levels just reached (the
-    // caller persists via save()).
+    // Grant any Iron Path CURRENCY rewards for the levels just reached — including
+    // the money inside the Level 60 bundle (the caller persists via save()).
     for (let lvl = before + 1; lvl <= after; lvl++) {
       const r = GAME.ironPath.rewards?.[lvl];
-      if (r?.type === "money") this.money += r.amount;
+      if (!r) continue;
+      if (r.type === "money") this.money += r.amount;
+      else if (r.type === "bundle") for (const it of r.items || []) if (it.type === "money") this.money += it.amount;
     }
     return after - before;
   }

@@ -11,7 +11,10 @@ export const COLORS = {
   arenaBorder: 0x9097a3, // slightly darker border
 
   tankBody: 0x00b0e9, // player blue
-  tankBarrel: 0x8a8f99,
+  // Barrels are two-tone (per the weapon PDF): a dark charcoal outer shell with a
+  // lighter-gray inset core.
+  tankBarrel: 0x9aa0aa, // light inner core
+  tankBarrelDark: 0x565a63, // dark outer shell
 
   wall: 0xa9aeb9, // procedural walls (world-toned), darker outline derived
   crate: 0x9c6b3f, // loot crate brown
@@ -68,6 +71,10 @@ export const GAME = {
     followSpeed: 6, // higher = camera catches up faster
     shakeDecay: 30, // how fast a shake settles (units/sec)
     shakeMax: 24, // cap so big bursts don't nauseate
+    // World events (bot deaths, crate breaks) shake THIS player's camera only by
+    // distance: full within `shakeNear`, linear falloff to zero at `shakeFar`.
+    shakeNear: 700, // full-strength shake within this world distance of the player
+    shakeFar: 2200, // no shake at/beyond this distance (across-map events are silent)
   },
 
   // Base player stats. Upgrades are applied on top of these (see `upgrades`).
@@ -171,51 +178,77 @@ export const GAME = {
   },
 
   // Cosmetics: pick the player's tank body color. Purely visual.
+  // Tank COLORS. Index 0 (Blue) is the default: always available, can't be locked
+  // (the guaranteed fallback). Every other color unlocks through the Iron Path.
+  // `gradient` [c1, c2] + `dir` make an FX gradient body (Aurora, Titanium).
   cosmetics: [
-    { name: "Aqua", color: 0x00b0e9 },
-    { name: "Lime", color: 0x76d672 },
-    { name: "Magenta", color: 0xc2497f },
-    { name: "Gold", color: 0xffd24a },
-    { name: "Violet", color: 0x9b6cff },
+    { name: "Blue", color: 0x00b0e9 }, // 0 — default starting color
+    { name: "Green", color: 0x39c05b }, // 1  (L7)
+    { name: "Yellow", color: 0xf4d03f }, // 2  (L13)
+    { name: "Rose", color: 0xe0567f }, // 3  (L22)
+    { name: "Purple", color: 0x9b4dff }, // 4  (L38)
+    { name: "Azure", color: 0x5112c7 }, // 5  (L44)
+    { name: "Tomato Red", color: 0xeb4444 }, // 6  (L49)
+    { name: "Crimson", color: 0xb2172b }, // 7  (L51)
+    { name: "Aurora", color: 0x2f9a86, gradient: [0x5335fc, 0x00cc50], dir: "tl-br", fx: true }, // 8 (L59)
+    { name: "Titanium", color: 0x9a9a9a, gradient: [0x595959, 0xeeeeee], dir: "tr-bl", fx: true }, // 9 (bundle)
   ],
 
-  // Wraps: a pattern drawn INSIDE the (still circular) tank body. `pattern` is a
-  // key understood by render/wraps.js. Index 0 is the plain default. Placeholders.
+  // Wraps: a pattern drawn INSIDE the (still circular) tank body. `pattern` keys
+  // render/wraps.js. Index 0 (None) is the always-available default.
   wraps: [
-    { name: "None", pattern: "none" },
-    { name: "Striped", pattern: "striped" },
-    { name: "Camo", pattern: "camo" },
-    { name: "Lightning", pattern: "lightning" },
-    { name: "Carbon", pattern: "carbon" },
+    { name: "None", pattern: "none" }, // 0
+    { name: "Camo", pattern: "camo" }, // 1  (L3)
+    { name: "Carbon", pattern: "carbon" }, // 2  (L11)
+    { name: "Stripes", pattern: "striped" }, // 3  (L27)
+    { name: "Lightning", pattern: "lightning" }, // 4  (L34)
+    { name: "Metal", pattern: "metal", fx: false }, // 5  (bundle) — diamond-plate
   ],
 
-  // Trails: a cosmetic trail left behind while moving. `style` keys the emitter
-  // in Game.#emitTrail. Index 0 is none. Placeholders.
+  // Trails: a cosmetic trail left behind while moving. `style` keys the emitter in
+  // Game.#emitTrail. Index 0 (None) is the always-available default.
   trails: [
-    { name: "None", style: "none" },
-    { name: "Smoke", style: "smoke", color: 0x8a8f99 },
-    { name: "Squares", style: "squares", color: 0x4aa3ff },
-    { name: "Spark", style: "spark", color: 0xffd24a },
-    { name: "Rainbow", style: "rainbow" },
+    { name: "None", style: "none" }, // 0
+    { name: "Smoke", style: "smoke", color: 0x8a8f99 }, // 1  (L4)
+    { name: "Sparks", style: "spark", color: 0xffd24a }, // 2  (L14)
+    { name: "Hologram", style: "hologram", color: 0x4ad6ff }, // 3  (L23)
+    { name: "Squares", style: "squares", color: 0x4aa3ff }, // 4  (L39)
+    { name: "Rainbow", style: "rainbow" }, // 5  (L46)
+    { name: "True Sparks", style: "trueSparks", fx: true }, // 6  (bundle)
   ],
 
   // Kill FX: an effect spawned ONLY when the player defeats another tank. `fx`
-  // keys Game.#killEffect. Index 0 is a plain burst. Placeholders.
+  // keys Game.#killEffect. Index 0 (No Kill FX) is the always-available default.
   killFx: [
-    { name: "Burst", fx: "burst" },
-    { name: "Dissolve", fx: "dissolve" },
-    { name: "Stars", fx: "stars" },
-    { name: "Explosion", fx: "explosion" },
+    { name: "No Kill FX", fx: "none" }, // 0 — default (disabled)
+    { name: "Burst", fx: "burst" }, // 1  (L9)
+    { name: "Explode", fx: "explosion" }, // 2  (L21)
+    { name: "Dissolve", fx: "dissolve" }, // 3  (L43)
+    { name: "Stars", fx: "stars" }, // 4  (L53)
   ],
 
-  // Titles: a colored label shown above the player's name (and as a preview).
-  // Index 0 (Noob) is the starting title. Sources: Iron Path (Noob L1, Rookie
-  // L5) and achievements (Guardian Slayer, Champion) — see game/unlocks.js.
+  // Titles: a colored label above the player's name. Index 0 (No Title) is the
+  // always-available "unequipped" state (never an Iron Path reward). Iron Path
+  // titles follow; FX titles carry `fx:true` (+ optional `bold`). The last two are
+  // ACHIEVEMENT rewards (see achievements.js / unlocks.js) — NOT on the Iron Path.
   titles: [
-    { name: "Noob", color: 0x9aa0b0, desc: "Every legend starts here." }, // gray
-    { name: "Rookie", color: 0x76d672, desc: "Reached Iron Path level 5." }, // green
-    { name: "Guardian Slayer", color: 0xffd24a, desc: "Killed 3 Arena Guardians." }, // yellow
-    { name: "Champion", color: 0xe23b50, desc: "Won a Battle Royale match." }, // radish red
+    { name: "No Title", color: 0x8a8f99, desc: "No title equipped.", none: true }, // 0
+    { name: "Noob", color: 0x9aa0b0, desc: "Every legend starts here." }, // 1  (L1)
+    { name: "Private", color: 0x9aa0b0, desc: "Iron Path level 5." }, // 2  (L5)
+    { name: "Corporal", color: 0xb6bcc8, desc: "Iron Path level 15." }, // 3  (L15)
+    { name: "Dedicated", color: 0x76d672, desc: "Iron Path level 20." }, // 4  (L20)
+    { name: "Sergeant", color: 0x76d672, desc: "Iron Path level 25." }, // 5  (L25)
+    { name: "True Player", color: 0x4aa3ff, desc: "Iron Path level 32." }, // 6  (L32)
+    { name: "Major", color: 0x4aa3ff, desc: "Iron Path level 35." }, // 7  (L35)
+    { name: "Unwavering", color: 0x9b6cff, desc: "Iron Path level 40." }, // 8  (L40)
+    { name: "Lieutenant", color: 0x9b6cff, desc: "Iron Path level 45." }, // 9  (L45)
+    { name: "Professional", color: 0xffd24a, desc: "Iron Path level 50." }, // 10 (L50)
+    { name: "Iron Captain", color: 0x004fa3, desc: "Iron Path level 55.", bold: true, fx: true }, // 11 (L55)
+    { name: "Chromatic", color: 0x488c73, desc: "Iron Path level 58.", fx: true }, // 12 (L58)
+    { name: "Veteran", color: 0xffd24a, desc: "Iron General Bundle." }, // 13 (bundle)
+    { name: "Titanium General", color: 0x849091, desc: "Iron General Bundle.", bold: true, fx: true }, // 14 (bundle)
+    { name: "Guardian Slayer", color: 0xffd24a, desc: "Killed 3 Arena Guardians." }, // 15 (achievement)
+    { name: "Champion", color: 0xe23b50, desc: "Won a Battle Royale match." }, // 16 (achievement)
   ],
 
   // Procedural walls: impassable rectangles in random clusters. They block
@@ -361,17 +394,85 @@ export const GAME = {
     xpPerKill: 60,
     xpPerSecond: 1, // survival reward
     winBonus: 500,
-    // Concrete rewards per level (keyed by level). Levels that are a multiple of
-    // `unlockEvery` grant the next weapon; other early levels grant a cosmetic or
-    // currency. `index` points into the matching GAME array. (Guardian Slayer is
-    // an ACHIEVEMENT reward — it must NOT appear on the Iron Path.)
+    // The AUTHORITATIVE concrete reward for every level 1..60 (keyed by level).
+    // `type` is one of: title | money | wrap | trail | killfx | color | weapon |
+    // bundle. `index` points into the matching GAME array; `amount` is $ for money.
+    // Weapons ALSO derive from `unlockEvery` (isWeaponUnlocked) — the two agree
+    // (weapon i unlocks at level 6·i). Achievement titles are NOT listed here.
     rewards: {
-      1: { type: "title", index: 0 }, // [Noob]
-      2: { type: "money", amount: 30 }, // $30
-      3: { type: "wrap", index: 2 }, // Camo
+      1: { type: "title", index: 1 }, // [Noob]
+      2: { type: "money", amount: 30 },
+      3: { type: "wrap", index: 1 }, // Camo
       4: { type: "trail", index: 1 }, // Smoke
-      5: { type: "title", index: 1 }, // [Rookie]
+      5: { type: "title", index: 2 }, // [Private]
       6: { type: "weapon", index: 1 }, // Dual Barrel
+      7: { type: "color", index: 1 }, // Green
+      8: { type: "money", amount: 15 },
+      9: { type: "killfx", index: 1 }, // Burst
+      10: { type: "money", amount: 45 },
+      11: { type: "wrap", index: 2 }, // Carbon
+      12: { type: "weapon", index: 2 }, // Machine Gun
+      13: { type: "color", index: 2 }, // Yellow
+      14: { type: "trail", index: 2 }, // Sparks
+      15: { type: "title", index: 3 }, // [Corporal]
+      16: { type: "money", amount: 45 },
+      17: { type: "money", amount: 30 },
+      18: { type: "weapon", index: 3 }, // Flank
+      19: { type: "money", amount: 30 },
+      20: { type: "title", index: 4 }, // [Dedicated]
+      21: { type: "killfx", index: 2 }, // Explode
+      22: { type: "color", index: 3 }, // Rose
+      23: { type: "trail", index: 3 }, // Hologram
+      24: { type: "weapon", index: 4 }, // Sniper
+      25: { type: "title", index: 5 }, // [Sergeant]
+      26: { type: "money", amount: 30 },
+      27: { type: "wrap", index: 3 }, // Stripes
+      28: { type: "money", amount: 20 },
+      29: { type: "money", amount: 50 },
+      30: { type: "weapon", index: 5 }, // Triple Barrel
+      31: { type: "money", amount: 45 },
+      32: { type: "title", index: 6 }, // [True Player]
+      33: { type: "money", amount: 30 },
+      34: { type: "wrap", index: 4 }, // Lightning
+      35: { type: "title", index: 7 }, // [Major]
+      36: { type: "weapon", index: 6 }, // Rocketeer
+      37: { type: "money", amount: 20 },
+      38: { type: "color", index: 4 }, // Purple
+      39: { type: "trail", index: 4 }, // Squares
+      40: { type: "title", index: 8 }, // [Unwavering]
+      41: { type: "money", amount: 55 },
+      42: { type: "weapon", index: 7 }, // Penta Shot
+      43: { type: "killfx", index: 3 }, // Dissolve
+      44: { type: "color", index: 5 }, // Azure
+      45: { type: "title", index: 9 }, // [Lieutenant]
+      46: { type: "trail", index: 5 }, // Rainbow
+      47: { type: "money", amount: 30 },
+      48: { type: "weapon", index: 8 }, // Burst Rifle
+      49: { type: "color", index: 6 }, // Tomato Red
+      50: { type: "title", index: 10 }, // [Professional]
+      51: { type: "color", index: 7 }, // Crimson
+      52: { type: "money", amount: 60 },
+      53: { type: "killfx", index: 4 }, // Stars
+      54: { type: "weapon", index: 9 }, // Cannoneer
+      55: { type: "title", index: 11 }, // [Iron Captain] (FX)
+      56: { type: "money", amount: 100 },
+      57: { type: "money", amount: 75 },
+      58: { type: "title", index: 12 }, // [Chromatic] (FX)
+      59: { type: "color", index: 8 }, // Aurora (FX)
+      // Level 60 — the Iron General Bundle: SEVEN items unlocked at once.
+      60: {
+        type: "bundle",
+        name: "Iron General Bundle",
+        items: [
+          { type: "weapon", index: 10 }, // Laser Rifle
+          { type: "money", amount: 200 },
+          { type: "title", index: 13 }, // [Veteran]
+          { type: "title", index: 14 }, // [Titanium General] (FX)
+          { type: "color", index: 9 }, // Titanium (FX)
+          { type: "trail", index: 6 }, // True Sparks (FX)
+          { type: "wrap", index: 5 }, // Metal
+        ],
+      },
     },
   },
 

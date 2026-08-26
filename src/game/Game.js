@@ -56,6 +56,9 @@ import { COLORS, WORLD, GAME } from "../config.js";
 // Cycled by the "rainbow" cosmetic trail.
 const HSV = [0xff5555, 0xffa53a, 0xffd24a, 0x76d672, 0x4aa3ff, 0x9b6cff];
 
+// A cosmetic color's FX gradient as [c1, c2, dir], or null for a flat color.
+const gradOf = (c) => (c && c.gradient ? [c.gradient[0], c.gradient[1], c.dir] : null);
+
 // Dark outline behind nametags so they stay legible on the light world.
 const NAME_STROKE = { color: 0x1c2029, width: 3, join: "round" };
 // Team nametag colors (player = white, enemies = light red).
@@ -210,7 +213,7 @@ export class Game {
   setCosmetic(index) {
     if (this.profile) this.profile.cosmetic = index;
     const c = GAME.cosmetics[index] || GAME.cosmetics[0];
-    if (this.player) this.player.setColor(c.color);
+    if (this.player) this.player.setColor(c.color, gradOf(c));
   }
 
   setWrap(index) {
@@ -231,8 +234,11 @@ export class Game {
     if (this.profile) this.profile.title = index;
     const t = GAME.titles[index] || GAME.titles[0];
     if (this.titleLabel) {
-      this.titleLabel.text = `[${t.name}]`;
+      // "No Title" hides the label entirely; FX titles keep their bold styling.
+      this.titleLabel.visible = !t.none;
+      this.titleLabel.text = t.none ? "" : `[${t.name}]`;
       this.titleLabel.style.fill = t.color ?? COLORS.xpFill;
+      this.titleLabel.style.fontWeight = t.bold ? "bold" : "normal";
     }
   }
 
@@ -246,7 +252,7 @@ export class Game {
   }
 
   update(dt) {
-    if (this.phase === "idle") return;
+    if (this.phase === "idle" || this.paused) return; // paused while the multiplayer mode owns the engine
 
     if (this.phase === "menu") this.#driftMenuCamera(dt);
 
@@ -878,7 +884,7 @@ export class Game {
             t.vx += (dx / d) * b.knockback;
             t.vy += (dy / d) * b.knockback;
           }
-          if (t.hp <= 0) this.#onTankKilled(t, b.team);
+          if (t.hp <= 0) this.#onTankKilled(t, b.team, b.owner); // b.owner = the firing tank (kill attribution)
           // Piercing rounds (Railgun) pass through a few targets before dying.
           if (b.pierce > 0) {
             b.pierce--;
@@ -892,15 +898,17 @@ export class Game {
     }
   }
 
-  #onTankKilled(t, byTeam) {
+  #onTankKilled(t, byTeam, killer = null) {
     if (t === this.player) {
-      this.#onPlayerDeath(byTeam === "guardian" ? "a Guardian" : "a Bot");
+      // Attribute to the specific killer entity when known (a bot); guardians/fog
+      // stay generic. The death screen uses this to draw the killer's tank.
+      this.#onPlayerDeath(byTeam === "guardian" ? "a Guardian" : killer || "a Bot");
       return;
     }
     t.dead = true;
     const big = t.team === "guardian";
     this.#burst(t.x, t.y, t.color, big ? 28 : 18);
-    this.engine.camera.shake(big ? 14 : 6);
+    this.#shakeAt(t.x, t.y, big ? 14 : 6);
     if (byTeam === "player") {
       this.kills += 1;
       this.score += big ? 500 : GAME.bot.score;
@@ -932,7 +940,7 @@ export class Game {
         p.takeDamage(dmg);
         this._playerHitCd = GAME.player.contactInvuln;
         this.engine.camera.shake(7);
-        if (p.hp <= 0) this.#onPlayerDeath(t.team === "guardian" ? "a Guardian" : "a Bot");
+        if (p.hp <= 0) this.#onPlayerDeath(t.team === "guardian" ? "a Guardian" : t); // t = the bot that rammed us
         break;
       }
     }
@@ -999,7 +1007,25 @@ export class Game {
     this.upgradeHud.view.visible = false;
     this.minimap.view.visible = false;
     const xp = this.#awardXp(survival, false);
-    this.callbacks.onMatchEnd?.({ killedBy: killer, survival, kills: this.kills, score: this.score, xp });
+    const info = this.#killerInfo(killer);
+    this.callbacks.onMatchEnd?.({ killedBy: info.text, killer: info, survival, kills: this.kills, score: this.score, xp });
+  }
+
+  // Build the death-screen "Killed By" info. When the killer is a tank entity (a
+  // bot, or a human player in multiplayer), include enough to draw its actual tank
+  // (color/wrap/turret) + name + title. Guardians and the fog stay text-only.
+  #killerInfo(k) {
+    if (k && typeof k === "object" && k.team && k !== this.player) {
+      if (k.team === "guardian") return { text: "a Guardian" };
+      const name = k.name || "a Tank";
+      return {
+        text: name,
+        tank: { color: k.color, gradient: k.gradient || null, wrap: k.wrap || "none", turret: k.turret || "single" },
+        name,
+        title: k.killerTitle || null, // { name, color, bold }; bots have none
+      };
+    }
+    return { text: typeof k === "string" ? k : "a Bot" };
   }
 
   // Compute Iron Path XP for the finished match, add it to the profile, persist,
@@ -1062,23 +1088,27 @@ export class Game {
     }
   }
 
-  // Bots collect world upgrade pickups through the SAME authoritative system: when
-  // a bot reaches a usable pickup it removes it from the world and the upgrade
-  // modifies the bot's stats. Uses each bot's cached perception target (cheap:
-  // O(bots) per frame). Bots ignore specials + already-owned upgrades (context
-  // filters those out), so they never sit stuck on something they can't use.
+  // Bots collect world upgrade pickups through the SAME authoritative system, under
+  // the SAME conditions a player must satisfy: any USABLE, collectable pickup whose
+  // circle the bot physically overlaps is picked up (not just its cached target) —
+  // so a bot standing on an upgrade always collects it, no radius inflation. Ignores
+  // specials + already-owned upgrades (botCanUse) and freshly-scattered loot still in
+  // its pickup delay (collectable), exactly like #collectPickups.
   #botPickups() {
+    if (!this.pickups.length) return;
     for (const bot of this.bots) {
-      const loot = bot.ai?.ctx?.loot;
-      if (bot.dead || !loot || loot.dead || !botCanUse(loot, bot)) continue;
-      const reach = bot.radius + loot.radius;
-      const dx = loot.x - bot.x;
-      const dy = loot.y - bot.y;
-      if (dx * dx + dy * dy > reach * reach) continue;
-      loot.dead = true; // remove from the world (authoritative)
-      bot.upgrades.collectNormal(loot.typeKey, loot.rarity);
-      this.#applyBotStats(bot);
-      this.#burst(loot.x, loot.y, RARITY_COLOR[loot.rarity], 8);
+      if (bot.dead) continue;
+      for (const pk of this.pickups) {
+        if (pk.dead || !pk.collectable || !botCanUse(pk, bot)) continue;
+        const reach = bot.radius + pk.radius;
+        const dx = pk.x - bot.x;
+        const dy = pk.y - bot.y;
+        if (dx * dx + dy * dy > reach * reach) continue;
+        pk.dead = true; // remove from the world (authoritative)
+        bot.upgrades.collectNormal(pk.typeKey, pk.rarity);
+        this.#applyBotStats(bot);
+        this.#burst(pk.x, pk.y, RARITY_COLOR[pk.rarity], 8);
+      }
     }
   }
 
@@ -1259,7 +1289,23 @@ export class Game {
     c.dead = true;
     for (const it of c.items) this.#scatterItem(c.x, c.y, it);
     this.#crateBurst(c);
-    this.engine.camera.shake(6);
+    this.#shakeAt(c.x, c.y, 6);
+  }
+
+  // Shake THIS player's camera for a world event at (x, y), scaled by distance from
+  // the player: full within `shakeNear`, linear falloff to zero at `shakeFar`, and
+  // nothing across the map. Phrased per-player (no global "any death → shake") so a
+  // future multiplayer build just asks the same question for each player's camera.
+  #shakeAt(x, y, amount) {
+    const p = this.player;
+    if (!p) return; // no local player → no camera to shake here
+    const d = Math.hypot(x - p.x, y - p.y);
+    const near = GAME.camera.shakeNear;
+    const far = GAME.camera.shakeFar;
+    if (d >= far) return;
+    const f = d <= near ? 1 : 1 - (d - near) / (far - near);
+    const amt = amount * f;
+    if (amt > 0.3) this.engine.camera.shake(amt);
   }
 
   // Eject one crate item as a collectible pickup, flung out with a short delay.
@@ -1376,17 +1422,31 @@ export class Game {
 
     const bx = p.x - Math.cos(p.rotation) * p.radius;
     const by = p.y - Math.sin(p.rotation) * p.radius;
+
+    // True Sparks (FX): a shower of yellow/orange/gray sparks flung outward in
+    // varied directions — not a single settling mark.
+    if (def.style === "trueSparks") {
+      const cols = [0xffd24a, 0xff8a3a, 0x9aa0a6];
+      for (let i = 0; i < 3; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 60 + Math.random() * 140;
+        this.engine.addEntity(new Particle({ x: bx, y: by, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 2 + Math.random() * 2, color: cols[(Math.random() * cols.length) | 0], life: 0.28 + Math.random() * 0.22 }));
+      }
+      return;
+    }
+
     let color = def.color ?? p.color;
     if (def.style === "rainbow") color = HSV[(this._rainbow = (this._rainbow + 1) % HSV.length)];
-    const radius = def.style === "squares" ? 5 : def.style === "spark" ? 3 : 7;
+    const radius = def.style === "squares" ? 5 : def.style === "spark" ? 3 : def.style === "hologram" ? 6 : 7;
     this.engine.addEntity(
-      new Particle({ x: bx, y: by, vx: 0, vy: 0, radius, color, life: def.style === "smoke" ? 0.6 : 0.4 }),
+      new Particle({ x: bx, y: by, vx: 0, vy: 0, radius, color, life: def.style === "smoke" ? 0.6 : def.style === "hologram" ? 0.5 : 0.4 }),
     );
   }
 
   // Spawn the equipped kill FX at a defeated tank (player kills only).
   #killEffect(x, y, color) {
-    const fx = GAME.killFx[this.profile?.killFx ?? 0]?.fx || "burst";
+    const fx = GAME.killFx[this.profile?.killFx ?? 0]?.fx || "none";
+    if (fx === "none") return; // "No Kill FX" — the default
     if (fx === "stars") {
       for (let i = 0; i < 10; i++) {
         const a = (i / 10) * Math.PI * 2;
@@ -1425,6 +1485,7 @@ export class Game {
       camera: this.engine.camera,
       bounds: this.bounds,
       color: c.color,
+      gradient: gradOf(c),
       turret: this.weapon?.turret || "single",
       wrap: (GAME.wraps[this.profile.wrap] || GAME.wraps[0]).pattern,
     });
@@ -1432,12 +1493,14 @@ export class Game {
     this.engine.addEntity(this.player);
     this.engine.camera.follow(this.player);
 
-    // Title above the name: "[TITLE]" (in its color) over a WHITE nametag.
+    // Title above the name: "[TITLE]" (in its color) over a WHITE nametag. "No
+    // Title" hides it; FX titles are bold, others normal weight.
     const title = GAME.titles[this.profile.title] || GAME.titles[0];
     this.titleLabel = new Text({
-      text: `[${title.name}]`,
-      style: { fill: title.color ?? COLORS.xpFill, fontFamily: "Ubuntu, Arial", fontSize: 12, fontWeight: "bold", stroke: NAME_STROKE },
+      text: title.none ? "" : `[${title.name}]`,
+      style: { fill: title.color ?? COLORS.xpFill, fontFamily: "Ubuntu, Arial", fontSize: 12, fontWeight: title.bold ? "bold" : "normal", stroke: NAME_STROKE },
     });
+    this.titleLabel.visible = !title.none;
     this.titleLabel.anchor.set(0.5);
     this.titleLabel.position.set(0, this.player.radius + 16);
     this.nameLabel = new Text({
@@ -1643,6 +1706,7 @@ export class Game {
       bounds: this.bounds,
       team,
     });
+    b.owner = owner || (team === "player" ? this.player : null); // firing tank, for kill attribution
     this.bullets.push(b);
     this.engine.addEntity(b);
   }

@@ -39,11 +39,21 @@ export function chooseObjective(ctx, target, profile) {
   const rotateEdge = ctx.safeR * (1.05 - p.fogAwareness * 0.28); // higher awareness rotates earlier
   if (ctx.distCenter > rotateEdge && ctx.phase !== "early") return OBJ.ROTATE_TO_SAFE_ZONE;
 
-  // 2. Low HP near a threat -> break off — UNLESS a near-dead enemy is right there
-  //    to finish. Low HP must NOT mean "never take a free kill" (no flat HP rule).
+  // 2. Low HP near a threat -> break off, but HP is only ONE factor. A low-HP bot
+  //    still commits when it can realistically WIN: a near-dead enemy to finish, OR
+  //    a clean 1v1 where the enemy is about as hurt (or more), with no third party
+  //    piling on and no guardian next to us. Otherwise it disengages.
   if (ctx.hpFrac < p.retreatThreshold && (ctx.enemyDist < 750 || ctx.guardianDist < 650)) {
-    const killShot = target && target.hp / target.maxHp < 0.22 && ctx.enemyDist < p.preferredRange * 1.3;
-    if (!killShot) return OBJ.RETREAT;
+    const tf = target ? target.hp / target.maxHp : 1;
+    const inReach = target && ctx.enemyDist < p.preferredRange * 1.4;
+    const killShot = inReach && tf < 0.25; // enemy nearly dead — finish it
+    const winnable =
+      inReach && tf <= ctx.hpFrac + 0.15 && ctx.enemies.length <= 1 && ctx.guardianDist > 500;
+    if (killShot || winnable) {
+      // Press the fight (chase only if it's pulling away and we like chasing).
+      return ctx.enemyDist > p.preferredRange * 1.25 && p.chaseTendency > 0.4 ? OBJ.CHASE_ENEMY : OBJ.ATTACK_ENEMY;
+    }
+    return OBJ.RETREAT;
   }
 
   // 2b. Actively taking fire: react (fight back if remotely favorable, else peel).

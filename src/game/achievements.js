@@ -8,7 +8,7 @@ export const ACHIEVEMENTS = [
     name: "Unstoppable",
     desc: "Kill 3 Arena Guardians in Battle Royale",
     goal: 3,
-    reward: { title: 2 }, // [Guardian Slayer] (yellow)
+    reward: { title: 15 }, // [Guardian Slayer] (yellow)
   },
   {
     id: "first_blood",
@@ -22,7 +22,7 @@ export const ACHIEVEMENTS = [
     name: "The Victorious One",
     desc: "Win a Battle Royale match",
     goal: 1,
-    reward: { money: 5, title: 3 }, // [Champion] (radish red)
+    reward: { money: 5, title: 16 }, // [Champion] (radish red)
   },
 ];
 

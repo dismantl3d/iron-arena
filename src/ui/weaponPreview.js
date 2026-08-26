@@ -7,6 +7,7 @@
 
 import { turretBarrels } from "../render/turret.js";
 import { darken } from "../render/shapes.js";
+import { COLORS } from "../config.js";
 import { hexToCss } from "./dom.js";
 
 const R = 22; // preview tank radius (in SVG units)
@@ -20,20 +21,21 @@ function lighten(int, t) {
   return (m(r) << 16) | (m(g) << 8) | m(b);
 }
 
-// weapon: a GAME.weapons entry. opts: { color, locked, wrap }.
-export function weaponPreviewSvg(weapon, { color = 0x00b0e9, locked = false, wrap = "none" } = {}) {
-  const body = locked ? "#39394a" : hexToCss(color);
+// weapon: a GAME.weapons entry. opts: { color, locked, wrap, gradient:[c1,c2,dir] }.
+export function weaponPreviewSvg(weapon, { color = 0x00b0e9, locked = false, wrap = "none", gradient = null } = {}) {
+  const gid = `wgrad${UID}`;
+  let body = locked ? "#39394a" : hexToCss(color);
+  let gradDef = "";
+  if (gradient && !locked) {
+    const [x1, y1, x2, y2] = gradient[2] === "tr-bl" ? [1, 0, 0, 1] : [0, 0, 1, 1];
+    gradDef = `<linearGradient id="${gid}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" stop-color="${hexToCss(gradient[0])}"/><stop offset="1" stop-color="${hexToCss(gradient[1])}"/></linearGradient>`;
+    body = `url(#${gid})`;
+  }
   const bodyEdge = locked ? "#23232c" : hexToCss(darken(color));
-  const barrel = locked ? "#2c2c36" : "#9aa0a6";
-  const barrelEdge = locked ? "#1c1c24" : hexToCss(darken(0x9aa0a6));
+  const barrelFill = locked ? 0x2c2c36 : COLORS.tankBarrel;
 
   const barrels = turretBarrels(weapon.turret, R)
-    .map((b) => {
-      const pts = barrelPoints(b)
-        .map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`)
-        .join(" ");
-      return `<polygon points="${pts}" fill="${barrel}" stroke="${barrelEdge}" stroke-width="3" stroke-linejoin="round"/>`;
-    })
+    .map((b) => svgBarrel(b, barrelFill))
     .join("");
 
   const id = `wclip${UID++}`;
@@ -41,7 +43,7 @@ export function weaponPreviewSvg(weapon, { color = 0x00b0e9, locked = false, wra
 
   return (
     `<svg viewBox="-70 -60 140 120" width="100%" height="100%" aria-hidden="true">` +
-    `<defs><clipPath id="${id}"><circle cx="0" cy="0" r="${R}"/></clipPath></defs>` +
+    `<defs>${gradDef}<clipPath id="${id}"><circle cx="0" cy="0" r="${R}"/></clipPath></defs>` +
     barrels +
     `<circle cx="0" cy="0" r="${R}" fill="${body}" stroke="${bodyEdge}" stroke-width="4"/>` +
     wrapSvg +
@@ -75,27 +77,49 @@ function wrapShapes(pattern, color, clipId) {
           inner += `<rect x="${xx + 1}" y="${yy + 1}" width="${step - 2}" height="${step - 2}" fill="${dark}" opacity="0.28"/>`;
       break;
     }
+    case "metal": {
+      const step = R * 0.52;
+      const d = step * 0.34;
+      let row = 0;
+      for (let yy = -R; yy <= R; yy += step, row++)
+        for (let xx = -R; xx <= R; xx += step) {
+          const cx = xx + (row % 2 ? step / 2 : 0);
+          inner += `<polygon points="${cx},${yy - d} ${cx + d},${yy} ${cx},${yy + d} ${cx - d},${yy}" fill="${light}" opacity="0.5"/>`;
+        }
+      break;
+    }
     default:
       return "";
   }
   return `<g clip-path="url(#${clipId})">${inner}</g>`;
 }
 
-// Four corners of one barrel quad (trapezoid), transformed exactly like the Pixi
-// version — w0 at the base, w1 at the muzzle.
-function barrelPoints(b) {
+// One barrel: a single gray fill with one darker outline (pre-redesign border, no
+// dark outer shell / inset core), drawn in the barrel's LOCAL axis-aligned space
+// inside a <g> transform (translate perp, rotate angle) — mirroring the Pixi Tank
+// renderer so preview and in-world turrets match. Geometry unchanged.
+function svgBarrel(b, fillC) {
   const w0 = b.w0 ?? b.width;
   const w1 = b.w1 ?? b.width;
-  const st = b.start ?? 0;
-  const local = [
-    [st, -w0 / 2],
-    [st + b.length, -w1 / 2],
-    [st + b.length, w1 / 2],
-    [st, w0 / 2],
-  ];
-  const ox = -Math.sin(b.angle) * b.perp;
-  const oy = Math.cos(b.angle) * b.perp;
-  const c = Math.cos(b.angle);
-  const s = Math.sin(b.angle);
-  return local.map(([x, y]) => [x * c - y * s + ox, x * s + y * c + oy]);
+  const s = b.start ?? 0;
+  const len = b.length;
+  const fill = hexToCss(fillC);
+  const edgeC = hexToCss(darken(fillC));
+  const trap = Math.abs(w0 - w1) > R * 0.03;
+  const edge = 3;
+
+  let inner;
+  if (!trap) {
+    const r = Math.min(w0 * 0.32, len * 0.3);
+    inner = `<rect x="${s.toFixed(1)}" y="${(-w0 / 2).toFixed(1)}" width="${len.toFixed(1)}" height="${w0.toFixed(1)}" rx="${r.toFixed(1)}" fill="${fill}" stroke="${edgeC}" stroke-width="${edge}"/>`;
+  } else {
+    const pts = [[s, -w0 / 2], [s + len, -w1 / 2], [s + len, w1 / 2], [s, w0 / 2]];
+    const fmt = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    inner = `<polygon points="${fmt}" fill="${fill}" stroke="${edgeC}" stroke-width="${edge}" stroke-linejoin="round"/>`;
+  }
+
+  const ox = (-Math.sin(b.angle) * b.perp).toFixed(2);
+  const oy = (Math.cos(b.angle) * b.perp).toFixed(2);
+  const deg = ((b.angle * 180) / Math.PI).toFixed(2);
+  return `<g transform="translate(${ox} ${oy}) rotate(${deg})">${inner}</g>`;
 }

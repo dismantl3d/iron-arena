@@ -97,9 +97,10 @@ function polyPoints(n, r) {
   return out;
 }
 
-// A forward-pointing arrowhead/dart (tip along +x), for the Rocketeer rocket.
+// The Rocketeer rocket: a home-plate PENTAGON pointing forward (+x) — a flat rear
+// with two sides converging to a point at the tip, matching the PDF.
 function arrowPoints(r) {
-  return [r * 1.3, 0, -r * 0.7, -r, -r * 0.2, 0, -r * 0.7, r];
+  return [r * 1.25, 0, r * 0.35, -r * 0.95, -r * 0.85, -r * 0.95, -r * 0.85, r * 0.95, r * 0.35, r * 0.95];
 }
 
 // N-point star alternating outer/inner radius.

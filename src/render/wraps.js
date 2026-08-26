@@ -57,6 +57,20 @@ export function drawWrap(g, pattern, r, baseColor) {
       }
       break;
     }
+    case "metal": {
+      // Diamond-plate: a checker-offset lattice of small diamonds (metal tread).
+      const step = r * 0.52;
+      const d = step * 0.34;
+      let row = 0;
+      for (let yy = -r; yy <= r; yy += step, row++) {
+        for (let xx = -r; xx <= r; xx += step) {
+          const cx = xx + (row % 2 ? step / 2 : 0);
+          g.poly([cx, yy - d, cx + d, yy, cx, yy + d, cx - d, yy]).fill({ color: light, alpha: 0.5 });
+          g.poly([cx, yy - d * 0.55, cx + d * 0.55, yy, cx, yy + d * 0.55, cx - d * 0.55, yy]).fill({ color: dark, alpha: 0.3 });
+        }
+      }
+      break;
+    }
     default:
       break; // "none"
   }

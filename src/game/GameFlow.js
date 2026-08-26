@@ -20,6 +20,7 @@ import { CosmeticsPanel } from "../ui/CosmeticsPanel.js";
 import { ShopPanel } from "../ui/ShopPanel.js";
 import { AchievementsPanel } from "../ui/AchievementsPanel.js";
 import { AchievementToast } from "../ui/AchievementToast.js";
+import { MultiplayerMode } from "../net/MultiplayerMode.js";
 import { GAME } from "../config.js";
 import { ACHIEVEMENTS } from "./achievements.js";
 
@@ -68,8 +69,13 @@ export class GameFlow {
       },
     );
 
+    // Multiplayer (Phase 1): a separate mode that takes over the engine while the
+    // single-player Game is paused. Returns to the menu via onExit.
+    this.mp = new MultiplayerMode(engine, input, this.profile, { onExit: () => this.#exitMultiplayer() });
+
     this.menu = new MainMenu(this.profile, {
       onPlay: () => this.#play(),
+      onMultiplayer: () => this.#startMultiplayer(),
       onIronPath: () => this.#openPanel(this.ironPath),
       onCosmetics: () => this.#openPanel(this.cosmetics),
       onArsenal: () => this.#openPanel(this.arsenal),
@@ -101,6 +107,22 @@ export class GameFlow {
     this._screen = "menu";
     this.game.showMenuBackground();
     this.menu.show();
+  }
+
+  // --- multiplayer (foundation) --------------------------------------------
+  #startMultiplayer() {
+    this.profile.save();
+    this.#closePanels();
+    this.menu.hide();
+    this._screen = "mp";
+    this.game.paused = true; // hand the engine to the multiplayer mode
+    this.mp.start();
+  }
+
+  #exitMultiplayer() {
+    this.mp.stop();
+    this.game.paused = false;
+    this.#toMenu();
   }
 
   #play() {

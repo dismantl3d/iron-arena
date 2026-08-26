@@ -28,6 +28,9 @@ const rand = (a, b) => a + Math.random() * (b - a);
 
 // A point-blank enemy is an immediate threat that forces a fresh decision.
 const POINT_BLANK = 360;
+// Arena Guardians are major environmental hazards: bots steer away from a live one
+// within this range (unless deliberately fighting it), arcing around its fire.
+const GUARD_AVOID = 380;
 
 // A tank's ACTUAL projectile reach (speed × life) — bots fire within this, and it
 // scales with the tank's bullet-speed/range upgrades. Falls back to the Standard
@@ -291,6 +294,18 @@ export class BotBrain {
         break;
     }
 
+    // Arena Guardian avoidance: a nearby LIVE guardian is a major hazard. Unless
+    // we're deliberately fighting it (or it's nearly dead and finishable), add an
+    // away-from-guardian push that grows as it gets closer — so bots arc around
+    // guardian fire while looting / travelling / chasing / even fighting the player
+    // near one, instead of walking into it. Perception-limited (ctx.guardian only
+    // exists within awareness).
+    if (ctx.guardian && this.objective !== OBJ.FIGHT_GUARDIAN && (ctx.guardianHpFrac ?? 1) >= 0.3 && ctx.guardianDist < GUARD_AVOID) {
+      const gax = Math.atan2(tank.y - ctx.guardian.y, tank.x - ctx.guardian.x);
+      const w = (1 - ctx.guardianDist / GUARD_AVOID) * 1.7; // stronger the closer it is
+      move = { x: move.x + Math.cos(gax) * w, y: move.y + Math.sin(gax) * w };
+    }
+
     // Projectile dodging: overlay a juke when a perceived incoming shot reads as
     // dangerous. Deliberately imperfect — a skill-scaled reaction delay, a chance
     // to misjudge, direction error, and reduced success against overlapping shots —
@@ -302,10 +317,12 @@ export class BotBrain {
       this._prevThreatTime = Infinity; // no threat -> next one is "fresh" (reaction delay applies)
     }
 
-    // While committed to a fight, damp the anti-clump separation so bots can
-    // actually close to a lethal range (otherwise they orbit and never connect).
+    // Damp the anti-clump separation for objectives that need to reach an exact
+    // spot: full fights (close to lethal range) and looting (drive fully onto the
+    // pickup instead of orbiting it at separation distance).
     const inCombat = COMBAT_OBJ.has(this.objective);
-    move = this.#steer(move, tank, inCombat ? 0.12 : 0.5);
+    const looting = this.objective === OBJ.FIND_CRATE || this.objective === OBJ.COLLECT_UPGRADE;
+    move = this.#steer(move, tank, inCombat ? 0.12 : looting ? 0.22 : 0.5);
     const ml = Math.hypot(move.x, move.y);
     if (ml > 1e-3) {
       move.x /= ml;
