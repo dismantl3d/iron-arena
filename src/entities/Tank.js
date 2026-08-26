@@ -14,6 +14,7 @@ import { turretBarrels } from "../render/turret.js";
 import { drawWrap } from "../render/wraps.js";
 import { HealthBar } from "../render/HealthBar.js";
 import { approachAngle } from "../utils/angle.js";
+import { integrateMovement } from "../sim/physics.js";
 
 const FLASH_DURATION = 0.12; // seconds of "hit punch" after taking damage
 
@@ -115,20 +116,11 @@ export class Tank {
       return; // uncontrolled: nothing to move
     }
 
-    // Ease the velocity toward the desired vector so the tank accelerates,
-    // decelerates, and carries a little momentum instead of snapping.
-    const k = 1 - Math.exp(-this.accel * dt);
-    const spd = this.speed * this.moveScale;
-    this.vx += (move.x * spd - this.vx) * k;
-    this.vy += (move.y * spd - this.vy) * k;
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-
-    // Keep the tank inside the arena.
-    if (this.bounds) {
-      this.x = Math.min(Math.max(this.x, this.bounds.minX + this.radius), this.bounds.maxX - this.radius);
-      this.y = Math.min(Math.max(this.y, this.bounds.minY + this.radius), this.bounds.maxY - this.radius);
-    }
+    // Ease the velocity toward the desired vector (momentum), advance, and clamp to
+    // the arena — via the SHARED simulation integrator (src/sim/physics.js), the
+    // same code the headless WorldModel/server uses. `speed × moveScale` folds in
+    // the movement-speed upgrade exactly as before.
+    integrateMovement(this, dt, move.x, move.y, this.speed * this.moveScale, this.accel, this.bounds, this.radius);
 
     if (aim !== null) {
       this.rotation = approachAngle(this.rotation, aim, this.turnRate * dt);

@@ -10,6 +10,7 @@
 
 import { Graphics } from "pixi.js";
 import { graphics, drawCircle, darken } from "../render/shapes.js";
+import { stepBullet } from "../sim/physics.js";
 
 export class Bullet {
   constructor({
@@ -67,10 +68,8 @@ export class Bullet {
   }
 
   update(dt) {
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-
-    this.life -= dt;
+    // Advance + age via the SHARED simulation primitive (src/sim/physics.js).
+    stepBullet(this, dt);
     if (this.life <= 0) this.dead = true;
 
     if (this.bounds) {

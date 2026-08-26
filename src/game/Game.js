@@ -33,6 +33,7 @@ import { botCanUse } from "./ai/context.js";
 import { pickSavedPolicy } from "./ai/trainer/evolve.js";
 import { makeNameGen } from "./ai/names.js";
 import { GuardianBrain } from "./GuardianBrain.js";
+import { circleOverlap } from "../sim/physics.js";
 import { Fog } from "./Fog.js";
 import { UpgradeState } from "./UpgradeState.js";
 import { earnedXp } from "./IronPath.js";
@@ -852,10 +853,8 @@ export class Game {
   }
 
   #overlap(a, t) {
-    const dx = t.x - a.x;
-    const dy = t.y - a.y;
-    const reach = a.radius + t.radius;
-    return dx * dx + dy * dy <= reach * reach;
+    // Circle-vs-circle via the SHARED simulation primitive (src/sim/physics.js).
+    return circleOverlap(a.x, a.y, a.radius, t.x, t.y, t.radius);
   }
 
   #targets() {
