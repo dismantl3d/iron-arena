@@ -29,6 +29,7 @@ export class WorldModel {
     this.arena = opts.arena ?? SIM.arena;
     this.bounds = { minX: -this.arena, minY: -this.arena, maxX: this.arena, maxY: this.arena };
     this.entities = new Map(); // id -> entity record (players + bots)
+    this._list = []; // stable array mirror of entities (for cheap AI perception)
     this.bullets = []; // authoritative projectiles
     this.phase = "waiting"; // match state (waiting | playing) — structure for later
     this.time = 0; // seconds since the model started stepping
@@ -72,12 +73,28 @@ export class WorldModel {
       damage: SIM.damage,
       bulletSpeed: SIM.bulletSpeed,
       bulletLife: SIM.bulletLife,
+      // Fields the shared bot AI reads off a controllable entity (so a BotBrain can
+      // drive a world-model entity headlessly, exactly as it drives a client Tank).
+      // The AI never mutates these — it only reads them to decide intent.
+      rotation: 0, // AI reads `.rotation`; kept in sync with `.rot` each step
+      radius: SIM.radius,
+      bounds: this.bounds,
+      _hitTimer: 0, // "recently took damage" (AI reads it), decays each step
+      dead: false, // mirror of !alive (the AI filters on `.dead`)
+      _bulletSpeed: SIM.bulletSpeed, // AI-read aliases (leading/effective-range calc)
+      _bulletLife: SIM.bulletLife,
     };
     this.entities.set(id, e);
+    this._list.push(e);
     return e;
   }
 
   removeEntity(id) {
+    const e = this.entities.get(id);
+    if (e) {
+      const i = this._list.indexOf(e);
+      if (i >= 0) this._list.splice(i, 1);
+    }
     return this.entities.delete(id);
   }
 
@@ -110,6 +127,8 @@ export class WorldModel {
     e.damage = s.bulletDamage;
     e.bulletSpeed = s.bulletSpeed;
     e.bulletLife = s.bulletLife;
+    e._bulletSpeed = s.bulletSpeed; // AI-read aliases (leading / effective range)
+    e._bulletLife = s.bulletLife;
     e.armor = s.armor;
   }
 
@@ -119,7 +138,28 @@ export class WorldModel {
     if (!e) return;
     const sp = this.spawnPoint();
     e.x = sp.x; e.y = sp.y; e.vx = 0; e.vy = 0;
-    e.hp = e.maxHp; e.alive = true; e.fireCd = 0;
+    e.hp = e.maxHp; e.alive = true; e.dead = false; e.fireCd = 0; e._hitTimer = 0;
+  }
+
+  // A game-like perception adapter so the shared BotBrain/ai modules can read this
+  // world (enemies/bullets/fog) exactly as they read the client `Game`. The AI only
+  // READS this — it feeds intent back via setInput(). No BotBrain dependency here,
+  // so the model stays AI-agnostic (and renderer-free).
+  aiView() {
+    const w = this;
+    if (!this._aiView) {
+      this._aiView = {
+        phase: "playing",
+        player: null, // set to a player entity when a human is present
+        bots: w._list, // stable array, mutated in place on add/remove
+        guardians: [],
+        pickups: [],
+        crates: [],
+        get bullets() { return w.bullets; }, // reassigned on filter → live getter
+        get fog() { return w.fog; },
+      };
+    }
+    return this._aiView;
   }
 
   // --- authoritative simulation --------------------------------------------
@@ -130,6 +170,8 @@ export class WorldModel {
     for (const e of this.entities.values()) {
       if (!e.alive) continue;
       e.rot = e.input.aim;
+      e.rotation = e.rot; // mirror for the AI (which reads `.rotation`)
+      if (e._hitTimer > 0) e._hitTimer -= dt; // "recently in combat" decays
       integrateMovement(e, dt, e.input.mx, e.input.my, e.speed, e.accel, this.bounds, SIM.radius);
       if (e.fireCd > 0) e.fireCd -= dt;
       if (e.input.fire && e.fireCd <= 0) {
@@ -154,6 +196,7 @@ export class WorldModel {
       e.hp = Math.max(0, e.hp - dps);
       if (e.hp <= 0) {
         e.alive = false;
+        e.dead = true;
         this.onKill?.({ victim: e.id, killer: null }); // fog kill (no killer)
       }
     }
@@ -186,9 +229,11 @@ export class WorldModel {
         if (!e.alive || e.team === b.team) continue; // friendly fire off within a team
         if (circleOverlap(e.x, e.y, SIM.radius, b.x, b.y, SIM.bulletRadius)) {
           e.hp = Math.max(0, e.hp - b.damage);
+          e._hitTimer = 1.5; // "recently took damage" (read by the AI)
           b.dead = true;
           if (e.hp <= 0) {
             e.alive = false;
+            e.dead = true;
             this.onKill?.({ victim: e.id, killer: b.owner });
           }
           break;
