@@ -11,14 +11,18 @@
 import { WebSocketServer } from "ws";
 import { WorldModel } from "../src/sim/WorldModel.js";
 import { SIM } from "../src/sim/constants.js";
+import { BotBrain } from "../src/game/BotBrain.js"; // pure decision layer (no Pixi/DOM)
+import { makeNameGen } from "../src/game/ai/names.js";
 
 const PORT = Number(process.env.PORT) || 8080;
 const TICK = 30; // authoritative simulation ticks per second
 const DT = 1 / TICK;
 const RESPAWN_DELAY = 3; // seconds a dead player waits before it may respawn
+const BOT_TARGET = Number(process.env.MP_BOTS ?? 8); // server-side bots filling the match
 
 // --- authoritative world + connection bookkeeping --------------------------------
 const world = new WorldModel({
+  fog: true, // authoritative zone; the bot AI's perception also reads fog.radius
   onKill: ({ victim, killer }) => {
     deadAt.set(victim, Date.now() / 1000);
     broadcast({ t: "kill", victim, killer: killer ?? null });
@@ -28,6 +32,35 @@ const world = new WorldModel({
 const sockets = new Map(); // id -> ws (which connection owns which entity)
 const deadAt = new Map(); // id -> death time (for respawn gating)
 let seqPlayer = 0;
+let seqBot = 0;
+const nameGen = makeNameGen();
+
+// --- server-side bots ------------------------------------------------------------
+// Bots are WorldModel entities driven by the SAME BotBrain the single-player game
+// uses (fresh random genome — no localStorage on the server). They run ONLY here;
+// clients just receive their authoritative state. This is the Step-4 flow moved
+// into the server tick: BotBrain.think() -> setInput() -> world.step().
+function spawnBot() {
+  const id = "bot_" + String(++seqBot).padStart(3, "0");
+  const e = world.addEntity({ id, type: "bot", team: id, name: nameGen(), color: 0 });
+  e.ai = new BotBrain(world.aiView(), null); // reads the world, returns intent
+  e.skill = e.ai.skill;
+  world.resolveStats(id); // Standard baseline (upgrades apply here later)
+  return e;
+}
+function aliveBots() {
+  let n = 0;
+  for (const e of world._list) if (e.type === "bot" && e.alive) n++;
+  return n;
+}
+// Keep the match populated: refill up to BOT_TARGET (reuse dead bots, then spawn).
+function refillBots() {
+  for (const e of world._list) {
+    if (aliveBots() >= BOT_TARGET) return;
+    if (e.type === "bot" && !e.alive) world.respawn(e.id);
+  }
+  while (aliveBots() < BOT_TARGET) spawnBot();
+}
 
 // --- networking ------------------------------------------------------------------
 const wss = new WebSocketServer({ port: PORT });
@@ -54,6 +87,7 @@ wss.on("connection", (ws) => {
       world.addEntity({ id, type: "player", team: id, name, color: numColor(msg.color) });
       sockets.set(id, ws);
       ws.playerId = id;
+      refillBots(); // a joining human should find a full match of bots
       send(ws, {
         t: "welcome",
         id,
@@ -124,7 +158,21 @@ setInterval(() => {
 }, 5000);
 
 // --- authoritative tick ----------------------------------------------------------
+spawnBotsInitial();
+function spawnBotsInitial() { refillBots(); }
+
 setInterval(() => {
+  if (!sockets.size) return; // no human connected — pause the sim (bots idle at spawn)
+
+  // 1) Server-side bot DECISIONS -> intent (the model, not the bot, owns outcomes).
+  for (const e of world._list) {
+    if (!e.ai || !e.alive) continue;
+    const cmd = e.ai.think(DT, e);
+    const mv = cmd.move || { x: 0, y: 0 };
+    world.setInput(e.id, { mx: mv.x, my: mv.y, aim: cmd.aim ?? e.rot, fire: e.ai.wantsFire });
+  }
+
+  // 2) Authoritative simulation + broadcast to all connected clients.
   world.step(DT);
-  if (world.entities.size) broadcast({ t: "state", now: Date.now(), ...world.snapshot() });
+  broadcast({ t: "state", now: Date.now(), ...world.snapshot() });
 }, 1000 / TICK);

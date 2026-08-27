@@ -170,7 +170,9 @@ export class MultiplayerMode {
       this.death.classList.toggle("ia-hidden", me.alive);
       this._dead = !me.alive;
     }
-    this.#updateDebug(snap.players.length);
+    let humans = 0, bots = 0;
+    for (const sp of snap.players) (sp.type === "bot" ? bots++ : humans++);
+    this.#updateDebug(humans, bots);
   }
 
   #addPlayer(sp) {
@@ -178,7 +180,8 @@ export class MultiplayerMode {
     const tank = new Tank({ x: sp.x, y: sp.y, color: col.color, gradient: gradOf(col), turret: "single", bounds: this.engine.camera.bounds });
     tank.team = sp.id;
     tank.rotation = sp.rot;
-    const label = new Text({ text: sp.name, style: { fill: 0xffffff, fontFamily: "Ubuntu, Arial", fontSize: 13, fontWeight: "bold", stroke: { color: 0x1c2029, width: 3 } } });
+    // Nametag: white for humans, light red for bots (matches the single-player feel).
+    const label = new Text({ text: sp.name, style: { fill: sp.type === "bot" ? 0xe0756a : 0xffffff, fontFamily: "Ubuntu, Arial", fontSize: 13, fontWeight: "bold", stroke: { color: 0x1c2029, width: 3 } } });
     label.anchor.set(0.5);
     label.position.set(0, tank.radius + 20);
     tank.view.addChild(label);
@@ -286,11 +289,11 @@ export class MultiplayerMode {
 
   #setStatus(text) { this._statusText = text; this.#updateDebug(); }
 
-  #updateDebug(count) {
-    if (count != null) this._count = count;
+  #updateDebug(humans, bots) {
+    if (humans != null) { this._humans = humans; this._bots = bots; }
     const ping = this.net?.ping ?? 0;
     this.statusEl.innerHTML =
       `<b>MULTIPLAYER (dev)</b><br>${this._statusText || ""}<br>` +
-      `ID: ${this.myId || "—"}<br>Players: ${this._count ?? 1}<br>Ping: ${ping}ms`;
+      `ID: ${this.myId || "—"}<br>Humans: ${this._humans ?? 1} · Bots: ${this._bots ?? 0}<br>Ping: ${ping}ms`;
   }
 }
