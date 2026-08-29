@@ -41,6 +41,8 @@ export class NetClient {
       switch (m.t) {
         case "welcome": this.h.onWelcome?.(m); break;
         case "state": this.h.onState?.(m); break;
+        case "matchStart": this.h.onMatchStart?.(m); break;
+        case "lobby": this.h.onLobby?.(m); break;
         case "kill": this.h.onKill?.(m); break;
         case "winner": this.h.onWinner?.(m); break;
         case "leave": this.h.onLeave?.(m); break;

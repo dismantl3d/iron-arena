@@ -69,9 +69,17 @@ export class GameFlow {
       },
     );
 
-    // Multiplayer (Phase 1): a separate mode that takes over the engine while the
-    // single-player Game is paused. Returns to the menu via onExit.
-    this.mp = new MultiplayerMode(engine, input, this.profile, { onExit: () => this.#exitMultiplayer() });
+    // Online Battle Royale: the SERVER-AUTHORITATIVE match. It takes over the engine
+    // while the single-player Game is paused, and reuses the SAME Waiting Room UI
+    // (lobby countdown) → BR → death/winner, so online is the real Iron Arena flow
+    // (server-authoritative + shared), not a separate stripped-down mode.
+    this.mp = new MultiplayerMode(engine, input, this.profile, {
+      onExit: () => this.#exitMultiplayer(),
+      onWaiting: () => { this._screen = "mp"; this.waiting.show(); },
+      onCountdown: (s) => this.waiting.setCountdown(s),
+      onMatchStart: () => { this.#closePanels(); this.waiting.hide(); },
+      onLobby: () => { this._screen = "mp"; this.waiting.show(); },
+    });
 
     this.menu = new MainMenu(this.profile, {
       onPlay: () => this.#play(),
@@ -109,18 +117,24 @@ export class GameFlow {
     this.menu.show();
   }
 
-  // --- multiplayer (foundation) --------------------------------------------
+  // --- online battle royale -------------------------------------------------
+  // Enter the server-authoritative online BR. PLAY stays the offline game (which
+  // must always work with no server running); online is a first-class menu entry
+  // that reuses the same Waiting Room → BR → death/winner flow, now authoritative.
   #startMultiplayer() {
     this.profile.save();
     this.#closePanels();
     this.menu.hide();
+    this.death.hide();
+    this.winnerScreen.hide();
     this._screen = "mp";
-    this.game.paused = true; // hand the engine to the multiplayer mode
-    this.mp.start();
+    this.game.paused = true; // hand the engine to the online mode
+    this.mp.start(); // → onWaiting shows the Waiting Room once connected
   }
 
   #exitMultiplayer() {
     this.mp.stop();
+    this.waiting.hide();
     this.game.paused = false;
     this.#toMenu();
   }

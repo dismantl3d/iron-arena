@@ -11,6 +11,7 @@
 import { WebSocketServer } from "ws";
 import { WorldModel } from "../src/sim/WorldModel.js";
 import { SIM } from "../src/sim/constants.js";
+import { GAME } from "../src/config.js";
 import { BotBrain } from "../src/game/BotBrain.js"; // pure decision layer (no Pixi/DOM)
 import { makeNameGen } from "../src/game/ai/names.js";
 
@@ -18,7 +19,10 @@ const PORT = Number(process.env.PORT) || 8080;
 const TICK = 30; // authoritative simulation ticks per second
 const DT = 1 / TICK;
 const RESPAWN_DELAY = 3; // seconds a dead player waits before it may respawn
-const BOT_TARGET = Number(process.env.MP_BOTS ?? 8); // server-side bots filling the match
+const MATCH_SIZE = Number(process.env.MP_SIZE ?? GAME.match.matchSize); // total roster (humans + bots)
+const WAITING_BOTS = Number(process.env.MP_LOBBY_BOTS ?? 6); // bots idling in the lobby
+const COUNTDOWN = Number(process.env.MP_COUNTDOWN ?? GAME.match.countdown); // lobby countdown (s)
+const WINNER_HOLD = 6; // seconds a finished round holds before returning to the lobby
 
 // --- authoritative world + connection bookkeeping --------------------------------
 const world = new WorldModel({
@@ -28,9 +32,13 @@ const world = new WorldModel({
     // Enrich with the killer's authoritative appearance so clients can render the
     // "Killed By" card (killer tank + name + title) without trusting the client.
     const k = killer ? world.get(killer) : null;
-    const killerInfo = k
-      ? { name: k.name, color: k.color ?? 0, wrap: k.wrap ?? 0, weapon: k.weapon ?? 0, title: k.title ?? 0, isBot: k.type === "bot" }
-      : null;
+    // Guardians are text-only on the death screen (like single-player); humans/bots
+    // carry their full authoritative appearance for the "Killed By" card.
+    const killerInfo = !k
+      ? null
+      : k.type === "guardian"
+        ? { name: "a Guardian", isGuardian: true }
+        : { name: k.name, color: k.color ?? 0, wrap: k.wrap ?? 0, weapon: k.weapon ?? 0, title: k.title ?? 0, isBot: k.type === "bot" };
     broadcast({ t: "kill", victim, killer: killer ?? null, killerInfo });
     console.log(`[iron-arena] ${killer ?? "?"} eliminated ${victim}`);
   },
@@ -40,6 +48,12 @@ const deadAt = new Map(); // id -> death time (for respawn gating)
 let seqPlayer = 0;
 let seqBot = 0;
 const nameGen = makeNameGen();
+
+// --- match phase (authoritative lobby → battle royale → winner) -----------------
+let phase = "waiting"; // "waiting" (lobby countdown) | "playing" (live BR)
+let countdown = COUNTDOWN; // seconds left in the lobby before the match starts
+let winnerAnnounced = false;
+let winnerHold = 0; // seconds a finished round lingers before resetting the lobby
 
 // --- server-side bots ------------------------------------------------------------
 // Bots are WorldModel entities driven by the SAME BotBrain the single-player game
@@ -59,13 +73,68 @@ function aliveBots() {
   for (const e of world._list) if (e.type === "bot" && e.alive) n++;
   return n;
 }
-// Keep the match populated: refill up to BOT_TARGET (reuse dead bots, then spawn).
-function refillBots() {
+function aliveHumans() {
+  let n = 0;
+  for (const e of world._list) if (e.type === "player" && e.alive) n++;
+  return n;
+}
+// Lobby ambiance: keep a small handful of bots idling in the waiting room.
+function refillLobbyBots() {
   for (const e of world._list) {
-    if (aliveBots() >= BOT_TARGET) return;
+    if (aliveBots() >= WAITING_BOTS) break;
     if (e.type === "bot" && !e.alive) world.respawn(e.id);
   }
-  while (aliveBots() < BOT_TARGET) spawnBot();
+  while (aliveBots() < WAITING_BOTS) spawnBot();
+}
+// Fill the BR roster so humans + bots == MATCH_SIZE (reuse dead bots, then spawn).
+function fillMatchRoster() {
+  const humans = [...world._list].filter((e) => e.type === "player").length;
+  const target = Math.max(0, MATCH_SIZE - humans);
+  for (const e of world._list) {
+    if (aliveBots() >= target) break;
+    if (e.type === "bot" && !e.alive) world.respawn(e.id);
+  }
+  while (aliveBots() < target) spawnBot();
+  // Trim any surplus bots (e.g. many humans joined) down to the target.
+  const surplus = aliveBots() - target;
+  if (surplus > 0) {
+    let removed = 0;
+    for (const e of [...world._list]) {
+      if (removed >= surplus) break;
+      if (e.type === "bot") { world.removeEntity(e.id); removed++; }
+    }
+  }
+}
+// Trim the bot population down to `n` (used when returning to the lobby).
+function trimBotsTo(n) {
+  let over = aliveBots() - n;
+  for (const e of [...world._list]) {
+    if (over <= 0) break;
+    if (e.type === "bot") { world.removeEntity(e.id); over--; }
+  }
+}
+
+// --- match lifecycle -------------------------------------------------------------
+function startMatch() {
+  fillMatchRoster();
+  world.beginMatch(); // real arena, guardians, walls, loot, fog reset
+  phase = "playing";
+  winnerAnnounced = false;
+  winnerHold = 0;
+  broadcast({ t: "matchStart", arena: world.arena, walls: world.wallData() });
+  console.log(`[iron-arena] match started — ${aliveHumans()} human(s) + ${aliveBots()} bot(s)`);
+}
+
+function resetLobby() {
+  world.resetToWaiting(); // small arena, clear loot/guardians/walls, heal + respawn everyone
+  trimBotsTo(WAITING_BOTS);
+  phase = "waiting";
+  countdown = COUNTDOWN;
+  winnerAnnounced = false;
+  winnerHold = 0;
+  for (const id of deadAt.keys()) deadAt.delete(id);
+  broadcast({ t: "lobby", countdown: COUNTDOWN });
+  console.log(`[iron-arena] returned to lobby`);
 }
 
 // --- networking ------------------------------------------------------------------
@@ -99,15 +168,19 @@ wss.on("connection", (ws) => {
       world.resolveStats(id); // apply the player's chosen weapon's authoritative stats
       sockets.set(id, ws);
       ws.playerId = id;
-      refillBots(); // a joining human should find a full match of bots
+      if (phase === "playing") placeJoinerInArena(e); // late joiner drops into the live BR
+      else refillLobbyBots(); // lobby: show a few idling bots
       send(ws, {
         t: "welcome",
         id,
         tick: TICK,
         arena: world.arena,
+        phase,
+        countdown: Math.max(0, Math.ceil(countdown)),
+        walls: phase === "playing" ? world.wallData() : [],
         config: { speed: SIM.speed, accel: SIM.accel, maxHp: SIM.maxHp, radius: SIM.radius, bulletRadius: SIM.bulletRadius, bulletSpeed: SIM.bulletSpeed, cooldown: SIM.cooldown },
       });
-      console.log(`[iron-arena] ${id} (${name}) joined — ${world.entities.size} player(s)`);
+      console.log(`[iron-arena] ${id} (${name}) joined — ${world.entities.size} entit(y/ies), phase=${phase}`);
       return;
     }
 
@@ -117,11 +190,11 @@ wss.on("connection", (ws) => {
     if (msg.t === "input") {
       world.setInput(id, { mx: msg.mx, my: msg.my, aim: msg.aim, fire: msg.fire, detonate: msg.detonate });
     } else if (msg.t === "respawn") {
+      // BR semantics: no mid-match respawn (deaths are permanent for the round). A
+      // dead player rejoins when the round ends and the lobby resets. In the lobby,
+      // "Play Again" just re-readies them.
       const e = world.get(id);
-      if (e && !e.alive && Date.now() / 1000 - (deadAt.get(id) ?? 0) >= RESPAWN_DELAY) {
-        world.respawn(id);
-      }
-      refillBots(); // top up the match — also lets a winner start a fresh round
+      if (phase === "waiting" && e && !e.alive) world.respawn(id);
     } else if (msg.t === "ping") {
       send(ws, { t: "pong", id: msg.id });
     }
@@ -174,34 +247,60 @@ setInterval(() => {
   }
 }, 5000);
 
-// --- authoritative tick ----------------------------------------------------------
-spawnBotsInitial();
-function spawnBotsInitial() { refillBots(); }
-let winnerAnnounced = false;
+// Drop a late joiner (or the match roster) into the live arena's outer ring.
+function placeJoinerInArena(e) {
+  e.bounds = world.bounds;
+  const a = Math.random() * Math.PI * 2, r = world.arena * 0.82;
+  e.x = Math.cos(a) * r; e.y = Math.sin(a) * r; e.vx = 0; e.vy = 0;
+}
 
-setInterval(() => {
-  if (!sockets.size) return; // no human connected — pause the sim (bots idle at spawn)
-
-  // 1) Server-side bot DECISIONS -> intent (the model, not the bot, owns outcomes).
+// Server-side bot DECISIONS → intent (the model, not the bot, owns outcomes).
+// Guardians are driven inside the model, so we skip them here.
+function driveBots() {
   for (const e of world._list) {
-    if (!e.ai || !e.alive) continue;
+    if (e.type !== "bot" || !e.ai || !e.alive) continue;
     const cmd = e.ai.think(DT, e);
     const mv = cmd.move || { x: 0, y: 0 };
     world.setInput(e.id, { mx: mv.x, my: mv.y, aim: cmd.aim ?? e.rot, fire: e.ai.wantsFire });
   }
+}
 
-  // 2) Authoritative simulation + broadcast to all connected clients.
+// --- authoritative tick ----------------------------------------------------------
+setInterval(() => {
+  if (!sockets.size) { // no human connected — hold the lobby idle
+    if (phase !== "waiting") resetLobby();
+    return;
+  }
+
+  if (phase === "waiting") {
+    world.damageEnabled = false; // peaceful lobby: movement + preview firing, no harm
+    refillLobbyBots();
+    countdown -= DT;
+    driveBots();
+    world.step(DT);
+    broadcast({ t: "state", now: Date.now(), countdown: Math.max(0, countdown), ...world.snapshot() });
+    if (countdown <= 0) startMatch();
+    return;
+  }
+
+  // phase === "playing": drive bots, step, broadcast, decide the winner.
+  world.damageEnabled = true;
+  driveBots();
   world.step(DT);
   broadcast({ t: "state", now: Date.now(), ...world.snapshot() });
 
-  // 3) Authoritative match end: the server (not any client) decides the winner.
-  //    A round thins out (bots aren't refilled mid-round) until one entity remains.
-  const alive = world._list.filter((e) => e.alive);
-  if (alive.length > 1) winnerAnnounced = false; // a fresh, populated round
-  else if (alive.length === 1 && !winnerAnnounced) {
+  const alive = world.aliveCombatants();
+  if (!winnerAnnounced && alive <= 1) {
     winnerAnnounced = true;
-    const w = alive[0];
-    broadcast({ t: "winner", id: w.id, name: w.name, isBot: w.type === "bot" });
-    console.log(`[iron-arena] winner: ${w.id} (${w.name})`);
+    winnerHold = WINNER_HOLD;
+    const w = world._list.find((e) => e.alive && (e.type === "player" || e.type === "bot"));
+    if (w) {
+      broadcast({ t: "winner", id: w.id, name: w.name, isBot: w.type === "bot" });
+      console.log(`[iron-arena] winner: ${w.id} (${w.name})`);
+    }
+  }
+  if (winnerAnnounced) {
+    winnerHold -= DT;
+    if (winnerHold <= 0) resetLobby(); // return everyone to a fresh lobby
   }
 }, 1000 / TICK);
