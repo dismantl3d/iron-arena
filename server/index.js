@@ -25,7 +25,13 @@ const world = new WorldModel({
   fog: true, // authoritative zone; the bot AI's perception also reads fog.radius
   onKill: ({ victim, killer }) => {
     deadAt.set(victim, Date.now() / 1000);
-    broadcast({ t: "kill", victim, killer: killer ?? null });
+    // Enrich with the killer's authoritative appearance so clients can render the
+    // "Killed By" card (killer tank + name + title) without trusting the client.
+    const k = killer ? world.get(killer) : null;
+    const killerInfo = k
+      ? { name: k.name, color: k.color ?? 0, wrap: k.wrap ?? 0, weapon: k.weapon ?? 0, title: k.title ?? 0, isBot: k.type === "bot" }
+      : null;
+    broadcast({ t: "kill", victim, killer: killer ?? null, killerInfo });
     console.log(`[iron-arena] ${killer ?? "?"} eliminated ${victim}`);
   },
 });
@@ -84,7 +90,13 @@ wss.on("connection", (ws) => {
       if (ws.playerId) return; // already joined
       const id = `player_${String(++seqPlayer).padStart(3, "0")}`;
       const name = (typeof msg.name === "string" && msg.name.trim().slice(0, 20)) || id;
-      world.addEntity({ id, type: "player", team: id, name, color: numColor(msg.color) });
+      const e = world.addEntity({ id, type: "player", team: id, name, color: numColor(msg.color) });
+      // Store the player's authoritative cosmetics (indices into the shared GAME
+      // arrays) so the model carries them for kill attribution / rendering. The
+      // simulation ignores them; they're passthrough identity.
+      e.wrap = idx(msg.wrap); e.trail = idx(msg.trail); e.killFx = idx(msg.killFx);
+      e.title = idx(msg.title); e.weapon = idx(msg.weapon);
+      world.resolveStats(id); // apply the player's chosen weapon's authoritative stats
       sockets.set(id, ws);
       ws.playerId = id;
       refillBots(); // a joining human should find a full match of bots
@@ -103,12 +115,13 @@ wss.on("connection", (ws) => {
     if (!id || !world.get(id)) return;
 
     if (msg.t === "input") {
-      world.setInput(id, { mx: msg.mx, my: msg.my, aim: msg.aim, fire: msg.fire });
+      world.setInput(id, { mx: msg.mx, my: msg.my, aim: msg.aim, fire: msg.fire, detonate: msg.detonate });
     } else if (msg.t === "respawn") {
       const e = world.get(id);
       if (e && !e.alive && Date.now() / 1000 - (deadAt.get(id) ?? 0) >= RESPAWN_DELAY) {
         world.respawn(id);
       }
+      refillBots(); // top up the match — also lets a winner start a fresh round
     } else if (msg.t === "ping") {
       send(ws, { t: "pong", id: msg.id });
     }
@@ -132,6 +145,10 @@ function dropClient(ws) {
 
 function numColor(c) {
   return typeof c === "number" && Number.isFinite(c) ? c : 0;
+}
+// A safe cosmetic array index (>= 0 integer, else 0).
+function idx(v) {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
 }
 
 function send(ws, obj) {
@@ -160,6 +177,7 @@ setInterval(() => {
 // --- authoritative tick ----------------------------------------------------------
 spawnBotsInitial();
 function spawnBotsInitial() { refillBots(); }
+let winnerAnnounced = false;
 
 setInterval(() => {
   if (!sockets.size) return; // no human connected — pause the sim (bots idle at spawn)
@@ -175,4 +193,15 @@ setInterval(() => {
   // 2) Authoritative simulation + broadcast to all connected clients.
   world.step(DT);
   broadcast({ t: "state", now: Date.now(), ...world.snapshot() });
+
+  // 3) Authoritative match end: the server (not any client) decides the winner.
+  //    A round thins out (bots aren't refilled mid-round) until one entity remains.
+  const alive = world._list.filter((e) => e.alive);
+  if (alive.length > 1) winnerAnnounced = false; // a fresh, populated round
+  else if (alive.length === 1 && !winnerAnnounced) {
+    winnerAnnounced = true;
+    const w = alive[0];
+    broadcast({ t: "winner", id: w.id, name: w.name, isBot: w.type === "bot" });
+    console.log(`[iron-arena] winner: ${w.id} (${w.name})`);
+  }
 }, 1000 / TICK);

@@ -42,6 +42,7 @@ export class NetClient {
         case "welcome": this.h.onWelcome?.(m); break;
         case "state": this.h.onState?.(m); break;
         case "kill": this.h.onKill?.(m); break;
+        case "winner": this.h.onWinner?.(m); break;
         case "leave": this.h.onLeave?.(m); break;
         case "pong": if (m.id === this._pingSent) this.ping = Math.round(performance.now() - this._pingAt); break;
       }
@@ -61,8 +62,8 @@ export class NetClient {
     }
   }
 
-  sendInput(mx, my, aim, fire) {
-    this.send({ t: "input", mx, my, aim, fire });
+  sendInput(mx, my, aim, fire, detonate) {
+    this.send({ t: "input", mx, my, aim, fire, detonate });
   }
 
   requestRespawn() {

@@ -16,6 +16,8 @@ import { Container, Graphics, Text } from "pixi.js";
 import { GAME, COLORS } from "../config.js";
 import { Tank } from "../entities/Tank.js";
 import { drawCircle, darken } from "../render/shapes.js";
+import { weaponPreviewSvg } from "../ui/weaponPreview.js";
+import { hexToCss } from "../ui/dom.js";
 import { NetClient } from "./NetClient.js";
 
 const SEND_HZ = 30; // input sends per second
@@ -61,11 +63,14 @@ export class MultiplayerMode {
     // Backdrop (floor + grid + border) behind everything.
     this.backdrop = this.#buildBackdrop(arena);
     this.engine.world.addChildAt(this.backdrop, 0);
+    this.beamLayer = new Graphics(); // laser beams, redrawn each snapshot
+    this.engine.world.addChild(this.beamLayer);
     this.bulletLayer = new Container();
     this.engine.world.addChild(this.bulletLayer);
 
     // Local player tank (input + camera = predicted + responsive).
     const c = GAME.cosmetics[this.profile.cosmetic] || GAME.cosmetics[0];
+    const myWeapon = GAME.weapons[this.profile.weapon] || GAME.weapons[0];
     this.localTank = new Tank({
       x: 0, y: 0,
       input: this.input,
@@ -73,7 +78,7 @@ export class MultiplayerMode {
       bounds: this.engine.camera.bounds,
       color: c.color,
       gradient: gradOf(c),
-      turret: "single", // Standard for the multiplayer foundation
+      turret: myWeapon.turret || "single", // the player's equipped weapon
     });
     this.localTank.team = "me";
     this.engine.addEntity(this.localTank);
@@ -91,10 +96,17 @@ export class MultiplayerMode {
     this.net = new NetClient(url, {
       onWelcome: (m) => this.#onWelcome(m),
       onState: (m) => this.#onState(m),
+      onKill: (m) => this.#onKillMsg(m),
+      onWinner: (m) => this.#onWinnerMsg(m),
       onLeave: (m) => this.#removePlayer(m.id),
       onStatus: (s, d) => this.#onStatus(s, d),
     });
-    this.net.connect({ name: this.profile.displayName, color: this.profile.cosmetic });
+    this._kills = 0;
+    this._spawnAt = performance.now();
+    // Send the player's full authoritative cosmetics (indices into the shared GAME
+    // arrays) so the server can attribute kills with the right tank + name + title.
+    const p = this.profile;
+    this.net.connect({ name: p.displayName, color: p.cosmetic, wrap: p.wrap, trail: p.trail, killFx: p.killFx, title: p.title, weapon: p.weapon });
   }
 
   stop() {
@@ -109,7 +121,8 @@ export class MultiplayerMode {
     this.localTank = null;
     if (this.backdrop) this.backdrop.destroy({ children: true });
     if (this.bulletLayer) this.bulletLayer.destroy({ children: true });
-    this.backdrop = this.bulletLayer = null;
+    if (this.beamLayer) this.beamLayer.destroy();
+    this.backdrop = this.bulletLayer = this.beamLayer = null;
     this.overlay.classList.add("ia-hidden");
     this.death.classList.add("ia-hidden");
     this.engine.camera.follow(null);
@@ -154,20 +167,36 @@ export class MultiplayerMode {
       alive.add(sb.id);
       let b = this.bullets.get(sb.id);
       if (!b) {
-        const g = drawCircle(new Graphics(), 0, 0, GAME.bullet.radius, COLORS.tankBody);
+        const g = this.#bulletGraphic(sb.shape, sb.radius);
         this.bulletLayer.addChild(g);
-        b = { g, x: sb.x, y: sb.y, vx: sb.vx, vy: sb.vy };
+        b = { g, x: sb.x, y: sb.y, vx: sb.vx, vy: sb.vy, shape: sb.shape || "circle" };
         this.bullets.set(sb.id, b);
       }
       b.x = sb.x; b.y = sb.y; b.vx = sb.vx; b.vy = sb.vy; // snap to authority
     }
     for (const [id, b] of this.bullets) if (!alive.has(id)) { b.g.destroy(); this.bullets.delete(id); }
 
+    // Laser beams: redraw from the authoritative shooter → endpoint each snapshot.
+    this.beamLayer.clear();
+    for (const sp of snap.players) {
+      if (!sp.beam) continue;
+      this.beamLayer.moveTo(sp.x, sp.y).lineTo(sp.beam.x, sp.beam.y).stroke({ color: 0xff3b30, width: 5, alpha: 0.85 });
+    }
+
     // My HP + death state (drives the death overlay).
     const me = snap.players.find((p) => p.id === this.myId);
     if (me) {
       this.localTank.hp = me.hp; this.localTank.maxHp = me.maxHp;
-      this.death.classList.toggle("ia-hidden", me.alive);
+      if (me.alive && this._dead) {
+        // Respawned into a fresh round — reset stats + clear the post-match overlays.
+        this._spawnAt = performance.now();
+        this._kills = 0;
+        this.death.classList.add("ia-hidden");
+        this.victory.classList.add("ia-hidden");
+        this.killerCard.classList.add("ia-hidden");
+      } else if (!me.alive) {
+        this.death.classList.remove("ia-hidden"); // dead (killer card filled by #onKillMsg)
+      }
       this._dead = !me.alive;
     }
     let humans = 0, bots = 0;
@@ -177,7 +206,8 @@ export class MultiplayerMode {
 
   #addPlayer(sp) {
     const col = GAME.cosmetics[sp.color] || GAME.cosmetics[0];
-    const tank = new Tank({ x: sp.x, y: sp.y, color: col.color, gradient: gradOf(col), turret: "single", bounds: this.engine.camera.bounds });
+    const turret = (GAME.weapons[sp.weapon] || GAME.weapons[0]).turret || "single";
+    const tank = new Tank({ x: sp.x, y: sp.y, color: col.color, gradient: gradOf(col), turret, bounds: this.engine.camera.bounds });
     tank.team = sp.id;
     tank.rotation = sp.rot;
     // Nametag: white for humans, light red for bots (matches the single-player feel).
@@ -209,7 +239,8 @@ export class MultiplayerMode {
       const aim = Math.atan2(m.y - this.localTank.y, m.x - this.localTank.x);
       // Don't move/fire while dead (server ignores it anyway, but be tidy).
       const fire = !this._dead && this.input.isFiring();
-      this.net.sendInput(this._dead ? 0 : mv.x, this._dead ? 0 : mv.y, aim, fire);
+      const detonate = !this._dead && (this.input.isDown("ShiftLeft") || this.input.isDown("ShiftRight")); // Rocketeer
+      this.net.sendInput(this._dead ? 0 : mv.x, this._dead ? 0 : mv.y, aim, fire, detonate);
     }
 
     // Soft-correct the local predicted tank toward the server's authoritative pos.
@@ -230,7 +261,25 @@ export class MultiplayerMode {
     for (const b of this.bullets.values()) {
       b.x += b.vx * dt; b.y += b.vy * dt;
       b.g.position.set(b.x, b.y);
+      if (b.shape === "arrow") b.g.rotation = Math.atan2(b.vy, b.vx); // point the rocket forward
     }
+  }
+
+  // A projectile graphic matching the authoritative shape/radius (blue like SP):
+  // circle (default), arrow (Rocketeer rocket pentagon), star (detonation pellets).
+  #bulletGraphic(shape, radius) {
+    const r = radius || GAME.bullet.radius;
+    const g = new Graphics();
+    if (shape === "arrow") {
+      g.poly([r * 1.25, 0, r * 0.35, -r * 0.95, -r * 0.85, -r * 0.95, -r * 0.85, r * 0.95, r * 0.35, r * 0.95]).fill(COLORS.tankBody).stroke({ color: darken(COLORS.tankBody), width: 2, alignment: 0.5 });
+    } else if (shape === "star") {
+      const pts = [];
+      for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; const rr = i % 2 ? r * 0.5 : r; pts.push(Math.cos(a) * rr, Math.sin(a) * rr); }
+      g.poly(pts).fill(COLORS.tankBody).stroke({ color: darken(COLORS.tankBody), width: 2, alignment: 0.5 });
+    } else {
+      drawCircle(g, 0, 0, r, COLORS.tankBody);
+    }
+    return g;
   }
 
   #lerpAngle(a, b, t) {
@@ -266,13 +315,21 @@ export class MultiplayerMode {
     this.overlay.className = "ia-mp-overlay ia-hidden";
     this.overlay.append(this.statusEl, this.exitBtn);
 
-    // Death overlay with a Respawn button.
+    // Death overlay: "YOU DIED" + authoritative "KILLED BY" card + stats + buttons.
     this.death = document.createElement("div");
     this.death.className = "ia-mp-death ia-hidden";
     const dcard = document.createElement("div");
     dcard.className = "ia-panel";
     const dh = document.createElement("h2");
     dh.textContent = "YOU DIED";
+    // Reuse the single-player death-screen killer-card markup + CSS.
+    this.killerCard = document.createElement("div");
+    this.killerCard.className = "ia-killedby ia-hidden";
+    this.killerCard.innerHTML =
+      `<div class="ia-killedby-label">KILLED BY</div><div class="ia-killedby-art"></div>` +
+      `<div class="ia-killedby-name"></div><div class="ia-killedby-title"></div>`;
+    this.deathStats = document.createElement("div");
+    this.deathStats.className = "ia-note";
     const rb = document.createElement("button");
     rb.className = "ia-btn ia-primary";
     rb.textContent = "Respawn";
@@ -281,10 +338,72 @@ export class MultiplayerMode {
     mb.className = "ia-btn";
     mb.textContent = "Main Menu";
     mb.onclick = () => this.cb.onExit?.();
-    dcard.append(dh, rb, mb);
+    dcard.append(dh, this.killerCard, this.deathStats, rb, mb);
     this.death.append(dcard);
 
-    document.body.append(this.overlay, this.death);
+    // Victory overlay (authoritative winner).
+    this.victory = document.createElement("div");
+    this.victory.className = "ia-mp-death ia-hidden";
+    const vcard = document.createElement("div");
+    vcard.className = "ia-panel";
+    const vh = document.createElement("h2");
+    vh.textContent = "VICTORY";
+    vh.style.color = "#ffd24a";
+    this.victoryStats = document.createElement("div");
+    this.victoryStats.className = "ia-note";
+    const vb = document.createElement("button");
+    vb.className = "ia-btn ia-primary";
+    vb.textContent = "Play Again";
+    vb.onclick = () => { this.victory.classList.add("ia-hidden"); this.net?.requestRespawn(); };
+    const vm = document.createElement("button");
+    vm.className = "ia-btn";
+    vm.textContent = "Main Menu";
+    vm.onclick = () => this.cb.onExit?.();
+    vcard.append(vh, this.victoryStats, vb, vm);
+    this.victory.append(vcard);
+
+    document.body.append(this.overlay, this.death, this.victory);
+  }
+
+  // Authoritative kill event. Track my kills; render the "KILLED BY" card when I die.
+  #onKillMsg(m) {
+    if (m.killer === this.myId) this._kills = (this._kills || 0) + 1;
+    if (m.victim !== this.myId) return;
+    const survival = ((performance.now() - (this._spawnAt || performance.now())) / 1000).toFixed(1);
+    this.deathStats.innerHTML = `Survival ${survival}s&nbsp;·&nbsp;Kills ${this._kills || 0}`;
+    this.#renderKiller(m.killerInfo);
+  }
+
+  // Authoritative winner. If it's me, show the Victory screen.
+  #onWinnerMsg(m) {
+    if (m.id !== this.myId) return;
+    const survival = ((performance.now() - (this._spawnAt || performance.now())) / 1000).toFixed(1);
+    this.victoryStats.innerHTML = `Last tank standing&nbsp;·&nbsp;Kills ${this._kills || 0}&nbsp;·&nbsp;${survival}s`;
+    this.death.classList.add("ia-hidden");
+    this.victory.classList.remove("ia-hidden");
+  }
+
+  // Draw the killer's actual tank (color/wrap/weapon) + name + title, from the
+  // server's authoritative attribution. No title -> omit the title line.
+  #renderKiller(info) {
+    if (!info) { this.killerCard.classList.add("ia-hidden"); return; }
+    const c = GAME.cosmetics[info.color] || GAME.cosmetics[0];
+    const w = GAME.weapons[info.weapon] || GAME.weapons[0];
+    const wrap = (GAME.wraps[info.wrap] || GAME.wraps[0]).pattern;
+    this.killerCard.querySelector(".ia-killedby-art").innerHTML =
+      weaponPreviewSvg(w, { color: c.color, gradient: gradOf(c), wrap });
+    this.killerCard.querySelector(".ia-killedby-name").textContent = info.name || "";
+    const t = GAME.titles[info.title];
+    const titleEl = this.killerCard.querySelector(".ia-killedby-title");
+    if (t && !t.none && t.name) {
+      titleEl.textContent = `[${t.name}]`;
+      titleEl.style.color = hexToCss(t.color ?? 0x9aa0b0);
+      titleEl.style.fontWeight = t.bold ? "800" : "700";
+      titleEl.classList.remove("ia-hidden");
+    } else {
+      titleEl.classList.add("ia-hidden");
+    }
+    this.killerCard.classList.remove("ia-hidden");
   }
 
   #setStatus(text) { this._statusText = text; this.#updateDebug(); }

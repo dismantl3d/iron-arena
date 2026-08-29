@@ -23,6 +23,7 @@ import { integrateMovement, muzzle, stepBullet, circleOverlap, clampAxis, num } 
 import { resolveEntityStats } from "./upgradeStats.js";
 import { UpgradeState } from "./UpgradeState.js";
 import { FogModel } from "./FogModel.js";
+import { resolveShots, shotToProjectile, rocketProjectile, fireModeOf } from "./weapons.js";
 
 export class WorldModel {
   constructor(opts = {}) {
@@ -73,6 +74,13 @@ export class WorldModel {
       damage: SIM.damage,
       bulletSpeed: SIM.bulletSpeed,
       bulletLife: SIM.bulletLife,
+      bulletRadius: SIM.bulletRadius,
+      armorMul: 1,
+      armor: 0,
+      _salvo: [], // staggered/burst shots queued for later this fire (Penta/Burst)
+      heat: 0, // laser heat 0..1 (overheats at 1)
+      overheat: 0, // laser lockout timer (s) while cooling from an overheat/interrupt
+      _detPrev: false, // rocket SHIFT-detonate edge-detect
       // Fields the shared bot AI reads off a controllable entity (so a BotBrain can
       // drive a world-model entity headlessly, exactly as it drives a client Tank).
       // The AI never mutates these — it only reads them to decide intent.
@@ -104,7 +112,7 @@ export class WorldModel {
 
   // Store an entity's INTENT. Move axis is clamped to the unit disc (anti-teleport);
   // aim is a finite angle; fire is a boolean. Positions are never accepted here.
-  setInput(id, { mx, my, aim, fire } = {}) {
+  setInput(id, { mx, my, aim, fire, detonate } = {}) {
     const e = this.entities.get(id);
     if (!e) return;
     const a = clampAxis(mx, my);
@@ -112,6 +120,7 @@ export class WorldModel {
     e.input.my = a.my;
     e.input.aim = num(aim, e.input.aim);
     e.input.fire = !!fire;
+    e.input.detonate = !!detonate; // Rocketeer SHIFT-detonate intent
   }
 
   // Resolve an entity's effective combat stats from its weapon + collected upgrades
@@ -127,9 +136,12 @@ export class WorldModel {
     e.damage = s.bulletDamage;
     e.bulletSpeed = s.bulletSpeed;
     e.bulletLife = s.bulletLife;
+    e.bulletRadius = s.bulletRadius;
+    e.armorMul = s.armorMul;
     e._bulletSpeed = s.bulletSpeed; // AI-read aliases (leading / effective range)
     e._bulletLife = s.bulletLife;
     e.armor = s.armor;
+    e._laser = s.laser; // resolved laser stats (tickDamage/tickRate) or null
   }
 
   // Respawn a dead entity at a fresh spawn with full HP.
@@ -173,11 +185,7 @@ export class WorldModel {
       e.rotation = e.rot; // mirror for the AI (which reads `.rotation`)
       if (e._hitTimer > 0) e._hitTimer -= dt; // "recently in combat" decays
       integrateMovement(e, dt, e.input.mx, e.input.my, e.speed, e.accel, this.bounds, SIM.radius);
-      if (e.fireCd > 0) e.fireCd -= dt;
-      if (e.input.fire && e.fireCd <= 0) {
-        e.fireCd = e.cooldown;
-        this.#fire(e);
-      }
+      this.#weaponUpdate(e, dt); // data-driven firing (any weapon in GAME.weapons)
     }
 
     // 2) Projectiles + authoritative collision → damage → death.
@@ -202,19 +210,140 @@ export class WorldModel {
     }
   }
 
-  #fire(e) {
-    const m = muzzle(e.x, e.y, e.rot, SIM.barrel);
+  // Per-entity weapon update: cooldown, staggered/burst salvo, fire trigger, and
+  // the continuous mechanics (rocket trails/detonation, laser beam + heat). All of
+  // it is dispatched from GAME.weapons config via src/sim/weapons.js — no per-weapon
+  // code here, so a new config-defined weapon works automatically.
+  #weaponUpdate(e, dt) {
+    const w = GAME.weapons[e.weapon] || GAME.weapons[0];
+    const mode = fireModeOf(w);
+    if (e.fireCd > 0) e.fireCd -= dt;
+
+    // Fire any staggered/burst shots whose delay elapsed.
+    if (e._salvo.length) {
+      const stats = this.#statsOf(e);
+      const origin = this.#originOf(e);
+      for (const q of e._salvo) { q.t -= dt; if (q.t <= 0) this.#spawnProjectile(shotToProjectile(q.shot, w, stats, origin), e); }
+      e._salvo = e._salvo.filter((q) => q.t > 0);
+    }
+
+    if (mode === "laser") { this.#laserUpdate(e, w, dt); return; }
+    if (mode === "rocket") this.#rocketUpdate(e, w, dt); // trails + SHIFT detonate
+
+    // Trigger.
+    if (e.input.fire && e.fireCd <= 0) {
+      e.fireCd = e.cooldown || w.cooldown;
+      if (mode === "rocket") {
+        this.#spawnProjectile(rocketProjectile(w, this.#originOf(e)), e, { trail: w.rocket.trail?.interval ?? 0.1, rocketCfg: w.rocket });
+      } else {
+        const { immediate, salvo } = resolveShots(w, this.#statsOf(e), this.#originOf(e));
+        for (const pr of immediate) this.#spawnProjectile(pr, e);
+        for (const q of salvo) e._salvo.push(q);
+      }
+    }
+  }
+
+  #statsOf(e) {
+    return { bulletSpeed: e.bulletSpeed, bulletRadius: e.bulletRadius, bulletLife: e.bulletLife, bulletDamage: e.damage, armorMul: e.armorMul };
+  }
+  #originOf(e) {
+    return { x: e.x, y: e.y, rot: e.rot, radius: e.radius };
+  }
+
+  // Turn a projectile descriptor into an authoritative bullet.
+  #spawnProjectile(pr, owner, extra = {}) {
     this.bullets.push({
       id: ++this._bulletSeq,
-      owner: e.id,
-      team: e.team,
-      x: m.x,
-      y: m.y,
-      vx: Math.cos(e.rot) * e.bulletSpeed,
-      vy: Math.sin(e.rot) * e.bulletSpeed,
-      life: e.bulletLife,
-      damage: e.damage,
+      owner: owner.id,
+      team: owner.team,
+      x: pr.x, y: pr.y,
+      vx: pr.vx, vy: pr.vy,
+      life: pr.life,
+      damage: pr.damage,
+      radius: pr.radius ?? SIM.bulletRadius,
+      armorMul: pr.armorMul ?? 1,
+      pierce: pr.pierce || 0,
+      shape: pr.shape || "circle",
+      isRocket: pr.isRocket || false,
+      trail: extra.trail || 0, // rocket rear-trail interval (0 = none)
+      trailT: extra.trail || 0,
+      rocketCfg: extra.rocketCfg || null,
     });
+  }
+
+  // Rocketeer: rear-fired trail bullets from each live rocket + SHIFT detonation of
+  // all of this entity's rockets into pellet rings (config-driven).
+  #rocketUpdate(e, w, dt) {
+    const detonate = e.input.detonate && !e._detPrev; // rising edge
+    e._detPrev = !!e.input.detonate;
+    for (const b of this.bullets) {
+      if (!b.isRocket || b.owner !== e.id || b.dead) continue;
+      // rear trail
+      if (b.trail > 0) {
+        b.trailT -= dt;
+        if (b.trailT <= 0) {
+          b.trailT = b.trail;
+          const tr = b.rocketCfg?.trail;
+          if (tr) {
+            const back = Math.atan2(b.vy, b.vx) + Math.PI;
+            this.bullets.push({ id: ++this._bulletSeq, owner: e.id, team: e.team, x: b.x, y: b.y, vx: Math.cos(back) * tr.speed, vy: Math.sin(back) * tr.speed, life: 0.7, damage: tr.damage, radius: tr.size, armorMul: 1, pierce: 0, shape: "circle", isRocket: false });
+          }
+        }
+      }
+      if (detonate) this.#detonateRocket(b, e);
+    }
+  }
+
+  #detonateRocket(rocket, e) {
+    rocket.dead = true;
+    const det = rocket.rocketCfg?.detonate;
+    if (!det) return;
+    for (const ring of det.layers || []) {
+      for (let i = 0; i < ring.count; i++) {
+        const a = (i / ring.count) * Math.PI * 2;
+        this.bullets.push({ id: ++this._bulletSeq, owner: e.id, team: e.team, x: rocket.x, y: rocket.y, vx: Math.cos(a) * ring.speed, vy: Math.sin(a) * ring.speed, life: 0.5, damage: ring.damage, radius: ring.size, armorMul: 1, pierce: 0, shape: "star", isRocket: false });
+      }
+    }
+  }
+
+  // Laser Rifle: a finite-range beam with a heat/overheat system. While firing (and
+  // not overheated) it raycasts to the nearest enemy in range and applies DoT; heat
+  // builds to an overheat lockout, and cools when released. `e.beam` (endpoint) +
+  // `e.heat` are exposed for rendering.
+  #laserUpdate(e, w, dt) {
+    const L = w.laser;
+    const firing = e.input.fire && e.overheat <= 0;
+    if (e.overheat > 0) e.overheat = Math.max(0, e.overheat - dt);
+
+    if (firing) {
+      e.heat = Math.min(1, e.heat + dt / L.heatTime);
+      if (e.heat >= 1) { e.overheat = L.coolTime; e.beam = null; return; }
+      // Raycast along aim to the nearest enemy within range.
+      const dirx = Math.cos(e.rot), diry = Math.sin(e.rot);
+      const m = muzzle(e.x, e.y, e.rot, w.muzzle ?? e.radius * 2.2);
+      let hitT = L.range, hit = null;
+      for (const t of this.entities.values()) {
+        if (!t.alive || t.team === e.team) continue;
+        const rx = t.x - m.x, ry = t.y - m.y;
+        const proj = rx * dirx + ry * diry;
+        if (proj <= 0 || proj > L.range) continue;
+        const perp = Math.abs(rx * diry - ry * dirx);
+        if (perp <= t.radius + 4 && proj < hitT) { hitT = proj; hit = t; }
+      }
+      e.beam = { x: m.x + dirx * hitT, y: m.y + diry * hitT };
+      // Damage over time at the configured tick rate.
+      e._laserTick = (e._laserTick || 0) - dt;
+      if (hit && e._laserTick <= 0) {
+        e._laserTick = (e._laser?.tickRate ?? L.tickRate);
+        const dmg = (e._laser?.tickDamage ?? L.tickDamage);
+        hit.hp = Math.max(0, hit.hp - dmg * (1 - Math.min(0.9, hit.armor || 0)));
+        hit._hitTimer = 1.5;
+        if (hit.hp <= 0 && hit.alive) { hit.alive = false; hit.dead = true; this.onKill?.({ victim: hit.id, killer: e.id }); }
+      }
+    } else {
+      e.heat = Math.max(0, e.heat - dt / L.coolTime);
+      e.beam = null;
+    }
   }
 
   #stepBullets(dt) {
@@ -227,15 +356,18 @@ export class WorldModel {
       }
       for (const e of this.entities.values()) {
         if (!e.alive || e.team === b.team) continue; // friendly fire off within a team
-        if (circleOverlap(e.x, e.y, SIM.radius, b.x, b.y, SIM.bulletRadius)) {
-          e.hp = Math.max(0, e.hp - b.damage);
+        if (b.hitSet && b.hitSet.has(e.id)) continue; // piercing round: don't re-hit
+        if (circleOverlap(e.x, e.y, e.radius, b.x, b.y, b.radius ?? SIM.bulletRadius)) {
+          const armor = Math.min(0.9, (e.armor || 0) * (b.armorMul ?? 1)); // Sniper/etc pierce armor
+          e.hp = Math.max(0, e.hp - b.damage * (1 - armor));
           e._hitTimer = 1.5; // "recently took damage" (read by the AI)
-          b.dead = true;
-          if (e.hp <= 0) {
+          if (e.hp <= 0 && e.alive) {
             e.alive = false;
             e.dead = true;
             this.onKill?.({ victim: e.id, killer: b.owner });
           }
+          if (b.pierce > 0) { b.pierce--; (b.hitSet ||= new Set()).add(e.id); } // pass through
+          else b.dead = true;
           break;
         }
       }
@@ -247,12 +379,23 @@ export class WorldModel {
   // A compact authoritative snapshot for broadcasting to clients.
   snapshot() {
     return {
-      players: [...this.entities.values()].map((e) => ({
-        id: e.id, type: e.type, name: e.name, color: e.color, weapon: e.weapon,
-        x: round(e.x, 100), y: round(e.y, 100), rot: round(e.rot, 1000),
-        hp: Math.round(e.hp), maxHp: e.maxHp, alive: e.alive,
-      })),
-      bullets: this.bullets.map((b) => ({ id: b.id, owner: b.owner, x: round(b.x, 10), y: round(b.y, 10), vx: b.vx, vy: b.vy })),
+      players: [...this.entities.values()].map((e) => {
+        const p = {
+          id: e.id, type: e.type, name: e.name, color: e.color, weapon: e.weapon,
+          x: round(e.x, 100), y: round(e.y, 100), rot: round(e.rot, 1000),
+          hp: Math.round(e.hp), maxHp: e.maxHp, alive: e.alive,
+        };
+        if (e.heat > 0.01) p.heat = round(e.heat, 100); // laser barrel glow
+        if (e.beam) p.beam = { x: round(e.beam.x, 10), y: round(e.beam.y, 10) }; // laser endpoint
+        return p;
+      }),
+      // Only non-default projectile shape/radius are sent, keeping snapshots small.
+      bullets: this.bullets.map((b) => {
+        const o = { id: b.id, owner: b.owner, x: round(b.x, 10), y: round(b.y, 10), vx: b.vx, vy: b.vy };
+        if (b.shape && b.shape !== "circle") o.shape = b.shape;
+        if (b.radius && b.radius !== SIM.bulletRadius) o.radius = round(b.radius, 10);
+        return o;
+      }),
     };
   }
 
