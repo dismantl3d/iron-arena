@@ -12,7 +12,7 @@ const URL = `ws://localhost:${PORT}`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn(process.execPath, [path.join(__dirname, "index.js")], {
-  env: { ...process.env, PORT: String(PORT), MP_COUNTDOWN: "0", MP_SIZE: "2", MP_LOBBY_BOTS: "0" },
+  env: { ...process.env, IRON_DB: 'memory', PORT: String(PORT), MP_COUNTDOWN: "0", MP_SIZE: "2", MP_LOBBY_BOTS: "0" },
   stdio: ["ignore", "ignore", "inherit"],
 });
 

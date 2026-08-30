@@ -768,6 +768,31 @@
   pointer-events: none;
 }
 
+/* Account chip (top-right, under the money readout): player level + sync status. */
+.ia-account {
+  position: fixed;
+  top: 52px;
+  right: 26px;
+  text-align: right;
+  pointer-events: none;
+}
+.ia-acct-level {
+  font-family: var(--ia-title-font);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ia-text);
+  letter-spacing: 0.02em;
+}
+.ia-acct-status {
+  font-family: var(--ia-ui-font);
+  font-size: 11px;
+  color: var(--ia-dim);
+  margin-top: 1px;
+}
+.ia-acct-status.ia-acct-online {
+  color: #4ec06a;
+}
+
 /* --- Side stack (Achievements + TEST, left-middle) + badge ------------- */
 .ia-side-stack {
   position: fixed;

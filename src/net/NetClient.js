@@ -16,7 +16,7 @@ export class NetClient {
     this._closedByUs = false;
   }
 
-  connect(joinMsg) {
+  connect() {
     this._closedByUs = false;
     let ws;
     try {
@@ -31,7 +31,7 @@ export class NetClient {
     ws.onopen = () => {
       this.connected = true;
       this.#status("connected");
-      this.send({ t: "join", ...joinMsg });
+      this.h.onOpen?.(); // caller authenticates, then joins
       this._pingTimer = setInterval(() => this.#doPing(), 2000);
     };
     ws.onmessage = (ev) => {
@@ -39,6 +39,9 @@ export class NetClient {
       try { m = JSON.parse(ev.data); } catch { return; }
       if (!m || typeof m.t !== "string") return;
       switch (m.t) {
+        case "authOk": this.h.onAuthOk?.(m); break;
+        case "authErr": this.h.onAuthErr?.(m); break;
+        case "profile": this.h.onProfile?.(m); break;
         case "welcome": this.h.onWelcome?.(m); break;
         case "state": this.h.onState?.(m); break;
         case "matchStart": this.h.onMatchStart?.(m); break;
@@ -63,6 +66,9 @@ export class NetClient {
       try { ws.send(JSON.stringify(obj)); } catch { /* dropped */ }
     }
   }
+
+  auth(msg) { this.send({ t: "auth", ...msg }); }
+  join(msg) { this.send({ t: "join", ...msg }); }
 
   sendInput(mx, my, aim, fire, detonate) {
     this.send({ t: "input", mx, my, aim, fire, detonate });

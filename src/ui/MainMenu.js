@@ -32,8 +32,12 @@ export class MainMenu {
       el("button", { class: "ia-btn", text: "SHOP", on: { click: () => this.cb.onShop() } }),
     ]);
 
-    // Money readout, top-right.
+    // Money + account readout, top-right. The account chip shows the player LEVEL
+    // and whether progression is backed by an online account or local-only (offline).
     this.money = el("div", { class: "ia-money" });
+    this.level = el("div", { class: "ia-acct-level" });
+    this.acctStatus = el("div", { class: "ia-acct-status" });
+    this.acct = el("div", { class: "ia-account" }, [this.level, this.acctStatus]);
 
     // Left-middle side stack: Achievements (with an unseen badge) + a developer
     // TEST button below it.
@@ -50,7 +54,7 @@ export class MainMenu {
     );
     const side = el("div", { class: "ia-side-stack" }, [this.achBtn, this.testBtn]);
 
-    this.root = el("div", { class: "ia-overlay ia-modal ia-menu ia-hidden" }, [this.money, side, col]);
+    this.root = el("div", { class: "ia-overlay ia-modal ia-menu ia-hidden" }, [this.money, this.acct, side, col]);
     document.body.appendChild(this.root);
   }
 
@@ -60,9 +64,13 @@ export class MainMenu {
     this.root.classList.remove("ia-hidden");
   }
 
-  // Refresh money + achievement badge (call after returning from a match/panel).
+  // Refresh money + level + account status + achievement badge (call after returning
+  // from a match/panel, or when the online account profile syncs).
   refresh() {
     this.money.textContent = `$${this.profile.money}`;
+    this.level.textContent = `LVL ${this.profile.ironPathLevel}`;
+    this.acctStatus.textContent = this.profile.online ? "● Account synced" : "Local progress";
+    this.acctStatus.classList.toggle("ia-acct-online", !!this.profile.online);
     const n = unseenAchievementCount(this.profile);
     this.badge.textContent = `(${n})`;
     this.badge.classList.toggle("ia-hidden", n === 0);

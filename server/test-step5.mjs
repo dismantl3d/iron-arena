@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Self-hosted: humans + bots in ONE instant match (MP_COUNTDOWN=0).
 const server = spawn(process.execPath, [path.join(__dirname, "index.js")], {
-  env: { ...process.env, PORT: String(PORT), MP_COUNTDOWN: "0", MP_SIZE: "12", MP_LOBBY_BOTS: "8" },
+  env: { ...process.env, IRON_DB: 'memory', PORT: String(PORT), MP_COUNTDOWN: "0", MP_SIZE: "12", MP_LOBBY_BOTS: "8" },
   stdio: ["ignore", "ignore", "inherit"],
 });
 

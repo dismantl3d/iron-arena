@@ -27,6 +27,7 @@ import { Hud } from "../ui/Hud.js";
 import { Minimap } from "../ui/Minimap.js";
 import { UpgradeHud } from "../ui/UpgradeHud.js";
 import { NetClient } from "./NetClient.js";
+import { AccountClient } from "./AccountClient.js";
 
 const SEND_HZ = 30; // input sends per second
 const gradOf = (c) => (c && c.gradient ? [c.gradient[0], c.gradient[1], c.dir] : null);
@@ -40,6 +41,7 @@ export class MultiplayerMode {
     this.profile = profile;
     this.cb = callbacks;
     this.active = false;
+    this.account = new AccountClient(); // persistent {accountId, token} in localStorage
 
     this.myId = null;
     this.arena = WORLD.waitingBounds.maxX; // lobby arena half-extent until told otherwise
@@ -103,6 +105,12 @@ export class MultiplayerMode {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = import.meta.env.VITE_SERVER_URL || `${proto}//${location.hostname}:8080`;
     this.net = new NetClient(url, {
+      // Auth handshake first: authenticate the account, adopt the authoritative
+      // profile, THEN join with the (server-validated) loadout.
+      onOpen: () => { this.#setStatus("authenticating…"); this.net.auth(this.account.authMessage(this.profile.displayName)); },
+      onAuthOk: (m) => this.#onAuthOk(m),
+      onAuthErr: (m) => this.#onAuthErr(m),
+      onProfile: (m) => this.#onProfile(m),
       onWelcome: (m) => this.#onWelcome(m),
       onState: (m) => this.#onState(m),
       onMatchStart: (m) => this.#enterMatch(m.walls || [], m.arena),
@@ -114,8 +122,47 @@ export class MultiplayerMode {
     });
     this._kills = 0;
     this._spawnAt = performance.now();
+    this.net.connect();
+  }
+
+  // --- account handshake ----------------------------------------------------
+  #onAuthOk(m) {
+    // Persist creds (a new account issues its token once) and adopt the SERVER's
+    // authoritative profile so the menu / Iron Path / cosmetics reflect the account.
+    if (m.token) this.account.save(m.accountId, m.token);
+    else if (m.accountId) { const c = this.account.load(); this.account.save(m.accountId, c.token); }
+    this.profile.applyServerProfile(m.profile);
+    this.cb.onProfile?.(); // refresh the main menu readouts (level / currency)
+    this.#restyleLocalTank();
+    this.#setStatus("connected");
+    // Join with the account's (validated) loadout — the server re-validates + spawns.
     const p = this.profile;
-    this.net.connect({ name: p.displayName, color: p.cosmetic, wrap: p.wrap, trail: p.trail, killFx: p.killFx, title: p.title, weapon: p.weapon });
+    this.net.join({ name: p.displayName, color: p.cosmetic, wrap: p.wrap, trail: p.trail, killFx: p.killFx, title: p.title, weapon: p.weapon });
+  }
+
+  #onAuthErr() {
+    // Stored creds were rejected (e.g. wiped server / bad token) — drop them and
+    // re-auth as a fresh guest account so the player can still play.
+    this.account.clear();
+    this.net.auth({ name: this.profile.displayName });
+  }
+
+  // Post-match (or any) authoritative profile update: refresh the local mirror + menu.
+  #onProfile(m) {
+    this.profile.applyServerProfile(m.profile);
+    this.cb.onProfile?.();
+  }
+
+  // Re-style the local tank to the current profile loadout (after auth / validation).
+  #restyleLocalTank() {
+    const t = this.localTank;
+    if (!t) return;
+    const c = GAME.cosmetics[this.profile.cosmetic] || GAME.cosmetics[0];
+    const w = GAME.weapons[this.profile.weapon] || GAME.weapons[0];
+    t.setColor?.(c.color, gradOf(c));
+    t.setWrap?.((GAME.wraps[this.profile.wrap] || GAME.wraps[0]).pattern);
+    t.setWeapon?.(w);
+    this.upgradeHud.setLaserMode?.(w.fireMode === "laser");
   }
 
   stop() {

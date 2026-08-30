@@ -79,6 +79,9 @@ export class GameFlow {
       onCountdown: (s) => this.waiting.setCountdown(s),
       onMatchStart: () => { this.#closePanels(); this.waiting.hide(); },
       onLobby: () => { this._screen = "mp"; this.waiting.show(); },
+      // The account synced (login / post-match reward): refresh the menu readouts
+      // (level / currency) so persistent progression shows immediately.
+      onProfile: () => this.menu.refresh(),
     });
 
     this.menu = new MainMenu(this.profile, {

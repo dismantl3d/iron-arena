@@ -3,6 +3,9 @@ dist/
 *.log
 .DS_Store
 
+# account database (SQLite / JSON store) — local persistent data, never committed
+server/data/
+
 
 
 # local env

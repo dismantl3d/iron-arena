@@ -21,6 +21,32 @@ export class Profile {
     // Achievement state: { [id]: { progress, completed, seen } }.
     this.achievements = data.achievements || {};
     this.devUnlockAll = data.devUnlockAll || false; // developer TEST mode: everything unlocked
+    // Online account id (null offline). When set, this Profile mirrors the SERVER-
+    // authoritative account (progression is decided server-side; this is a cache).
+    this.accountId = data.accountId || null;
+    this.online = false; // true while an authoritative account is loaded this session
+  }
+
+  // Adopt the SERVER's authoritative account profile (Phase 14.2 Step 7). The server
+  // owns XP/currency/unlocks/loadout; the client mirrors them so the existing menu +
+  // Iron Path + cosmetics panels reflect the account. Unlocks stay DERIVED from XP
+  // (unlocks.js) — server grants match that derivation, so no client change is needed.
+  applyServerProfile(wire) {
+    if (!wire) return;
+    this.accountId = wire.accountId ?? this.accountId;
+    this.online = true;
+    if (typeof wire.displayName === "string" && wire.displayName) this.username = wire.displayName;
+    if (Number.isFinite(wire.xp)) this.ironPathXp = wire.xp;
+    if (Number.isFinite(wire.currency)) this.money = wire.currency;
+    const L = wire.loadout || {};
+    if (Number.isFinite(L.weapon)) this.weapon = L.weapon;
+    if (Number.isFinite(L.cosmetic)) this.cosmetic = L.cosmetic;
+    if (Number.isFinite(L.wrap)) this.wrap = L.wrap;
+    if (Number.isFinite(L.trail)) this.trail = L.trail;
+    if (Number.isFinite(L.killFx)) this.killFx = L.killFx;
+    if (Number.isFinite(L.title)) this.title = L.title;
+    this.serverStats = wire.stats || null; // persistent match stats (for the profile UI)
+    this.save();
   }
 
   // Falls back to "Unnamed Tank" when the username field is blank.
@@ -74,6 +100,7 @@ export class Profile {
           money: this.money,
           achievements: this.achievements,
           devUnlockAll: this.devUnlockAll,
+          accountId: this.accountId,
         }),
       );
     } catch {

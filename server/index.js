@@ -14,6 +14,8 @@ import { SIM } from "../src/sim/constants.js";
 import { GAME } from "../src/config.js";
 import { BotBrain } from "../src/game/BotBrain.js"; // pure decision layer (no Pixi/DOM)
 import { makeNameGen } from "../src/game/ai/names.js";
+import { earnedXp } from "../src/game/IronPath.js"; // existing match-XP formula (shared)
+import { AccountService } from "./accounts/service.js"; // persistent, server-authoritative accounts
 
 const PORT = Number(process.env.PORT) || 8080;
 const TICK = 30; // authoritative simulation ticks per second
@@ -23,6 +25,12 @@ const MATCH_SIZE = Number(process.env.MP_SIZE ?? GAME.match.matchSize); // total
 const WAITING_BOTS = Number(process.env.MP_LOBBY_BOTS ?? 6); // bots idling in the lobby
 const COUNTDOWN = Number(process.env.MP_COUNTDOWN ?? GAME.match.countdown); // lobby countdown (s)
 const WINNER_HOLD = 6; // seconds a finished round holds before returning to the lobby
+
+// Persistent account store (server-authoritative progression). Opens SQLite by
+// default and degrades gracefully (JSON -> memory) so the server never crashes over
+// storage. Top-level await: ready before any connection is served.
+const accounts = await AccountService.open();
+console.log(`[iron-arena] account store: ${accounts.backend} (${accounts.store.count?.() ?? 0} account(s))`);
 
 // --- authoritative world + connection bookkeeping --------------------------------
 const world = new WorldModel({
@@ -39,6 +47,11 @@ const world = new WorldModel({
       : k.type === "guardian"
         ? { name: "a Guardian", isGuardian: true }
         : { name: k.name, color: k.color ?? 0, wrap: k.wrap ?? 0, weapon: k.weapon ?? 0, title: k.title ?? 0, isBot: k.type === "bot" };
+    // Credit a human killer's per-match tally (for authoritative XP on match end).
+    if (k && k.type === "player") k._matchKills = (k._matchKills || 0) + 1;
+    // A human victim earns their match XP (kills + survival) authoritatively now.
+    const ve = world.get(victim);
+    if (ve && ve.type === "player") awardMatchXp(victim, false);
     broadcast({ t: "kill", victim, killer: killer ?? null, killerInfo });
     console.log(`[iron-arena] ${killer ?? "?"} eliminated ${victim}`);
   },
@@ -118,11 +131,34 @@ function trimBotsTo(n) {
 function startMatch() {
   fillMatchRoster();
   world.beginMatch(); // real arena, guardians, walls, loot, fog reset
+  // Reset each human's per-match counters (kills + survival clock + award guard).
+  // These are MATCH state, never persisted — only the resulting XP is saved.
+  for (const e of world._list) if (e.type === "player") { e._matchStart = Date.now(); e._matchKills = 0; e._matchAwarded = false; }
   phase = "playing";
   winnerAnnounced = false;
   winnerHold = 0;
   broadcast({ t: "matchStart", arena: world.arena, walls: world.wallData() });
   console.log(`[iron-arena] match started — ${aliveHumans()} human(s) + ${aliveBots()} bot(s)`);
+}
+
+// Authoritatively award a human's MATCH progression to their account: XP (via the
+// existing earnedXp formula) + persistent stats, then push the updated profile to
+// the client. Guarded so each human is awarded at most once per match. This is the
+// ONLY place match results become persistent account data (match state stays in the
+// world model and is discarded).
+function awardMatchXp(entityId, won) {
+  const ws = sockets.get(entityId);
+  const e = world.get(entityId);
+  const acct = ws?.account;
+  if (!acct || !e || e._matchAwarded) return;
+  e._matchAwarded = true;
+  const survival = e._matchStart ? (Date.now() - e._matchStart) / 1000 : 0;
+  const kills = e._matchKills || 0;
+  const xp = earnedXp({ kills, survival, won });
+  const summary = accounts.awardXp(acct, xp); // adds XP, grants rewards/currency, saves
+  accounts.recordMatch(acct, { kills, survival, won }); // persistent stats, saves
+  send(ws, { t: "profile", profile: accounts.profile(acct), reward: { xp, ...summary, won } });
+  console.log(`[iron-arena] ${entityId} (${acct.id}) +${xp}xp${won ? " (WON)" : ""} -> L${summary.level}`);
 }
 
 function resetLobby() {
@@ -155,17 +191,38 @@ wss.on("connection", (ws) => {
     }
     if (!msg || typeof msg.t !== "string") return;
 
+    // Authenticate / identify the account. Returning clients present {accountId,
+    // token}; a fresh client presents neither (or an unknown id) and is minted a new
+    // guest account. The server sends back the AUTHORITATIVE profile; the raw token
+    // is issued exactly once (on creation). The client never provides its own XP/
+    // unlocks — those are decided here.
+    if (msg.t === "auth") {
+      const res = accounts.login({ accountId: msg.accountId, token: msg.token, displayName: msg.name });
+      if (!res.ok) { send(ws, { t: "authErr", reason: res.reason }); return; }
+      ws.account = res.account;
+      ws.accountId = res.account.id;
+      send(ws, { t: "authOk", accountId: res.account.id, ...(res.token ? { token: res.token } : {}), profile: accounts.profile(res.account) });
+      return;
+    }
+
     if (msg.t === "join") {
       if (ws.playerId) return; // already joined
+      // A client that didn't authenticate first gets an auto guest account (keeps
+      // headless/dev clients working); real clients auth beforehand.
+      if (!ws.account) { const g = accounts.login({ displayName: msg.name }); ws.account = g.account; ws.accountId = g.account.id; }
+      const account = ws.account;
       const id = `player_${String(++seqPlayer).padStart(3, "0")}`;
-      const name = (typeof msg.name === "string" && msg.name.trim().slice(0, 20)) || id;
-      const e = world.addEntity({ id, type: "player", team: id, name, color: numColor(msg.color) });
-      // Store the player's authoritative cosmetics (indices into the shared GAME
-      // arrays) so the model carries them for kill attribution / rendering. The
-      // simulation ignores them; they're passthrough identity.
-      e.wrap = idx(msg.wrap); e.trail = idx(msg.trail); e.killFx = idx(msg.killFx);
-      e.title = idx(msg.title); e.weapon = idx(msg.weapon);
-      world.resolveStats(id); // apply the player's chosen weapon's authoritative stats
+      const name = account.displayName || "Unnamed Tank"; // account identity is the id, not the name
+      const e = world.addEntity({ id, type: "player", team: id, name, color: 0 });
+      // AUTHORITATIVE loadout: validate the requested indices against what the account
+      // actually owns (unowned weapon/cosmetic falls back to the default) and equip
+      // the result. The entity carries the VALIDATED indices (used for rendering +
+      // kill attribution), so a client can never spawn with an unowned item.
+      const applied = accounts.setLoadout(account, { weapon: idx(msg.weapon), cosmetic: idx(msg.color), wrap: idx(msg.wrap), trail: idx(msg.trail), killFx: idx(msg.killFx), title: idx(msg.title) });
+      e.color = applied.cosmetic; e.wrap = applied.wrap; e.trail = applied.trail;
+      e.killFx = applied.killFx; e.title = applied.title; e.weapon = applied.weapon;
+      e.accountId = account.id; // link entity -> account (for authoritative match XP)
+      world.resolveStats(id); // apply the (validated) weapon's authoritative stats
       sockets.set(id, ws);
       ws.playerId = id;
       if (phase === "playing") placeJoinerInArena(e); // late joiner drops into the live BR
@@ -178,6 +235,7 @@ wss.on("connection", (ws) => {
         phase,
         countdown: Math.max(0, Math.ceil(countdown)),
         walls: phase === "playing" ? world.wallData() : [],
+        loadout: applied, // the server-validated loadout the client actually spawned with
         config: { speed: SIM.speed, accel: SIM.accel, maxHp: SIM.maxHp, radius: SIM.radius, bulletRadius: SIM.bulletRadius, bulletSpeed: SIM.bulletSpeed, cooldown: SIM.cooldown },
       });
       console.log(`[iron-arena] ${id} (${name}) joined — ${world.entities.size} entit(y/ies), phase=${phase}`);
@@ -207,6 +265,10 @@ wss.on("connection", (ws) => {
 function dropClient(ws) {
   if (!ws.playerId) return;
   const id = ws.playerId;
+  const e = world.get(id);
+  // A player leaving mid-match keeps the XP/stats they earned (persisted before the
+  // socket is torn down; the profile push simply won't reach the closed socket).
+  if (e && e.type === "player" && e.alive && phase === "playing") awardMatchXp(id, false);
   ws.playerId = null;
   if (world.removeEntity(id)) {
     sockets.delete(id);
@@ -216,9 +278,6 @@ function dropClient(ws) {
   }
 }
 
-function numColor(c) {
-  return typeof c === "number" && Number.isFinite(c) ? c : 0;
-}
 // A safe cosmetic array index (>= 0 integer, else 0).
 function idx(v) {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
@@ -252,6 +311,7 @@ function placeJoinerInArena(e) {
   e.bounds = world.bounds;
   const a = Math.random() * Math.PI * 2, r = world.arena * 0.82;
   e.x = Math.cos(a) * r; e.y = Math.sin(a) * r; e.vx = 0; e.vy = 0;
+  e._matchStart = Date.now(); e._matchKills = 0; e._matchAwarded = false; // fresh match clock
 }
 
 // Server-side bot DECISIONS → intent (the model, not the bot, owns outcomes).
@@ -295,6 +355,7 @@ setInterval(() => {
     winnerHold = WINNER_HOLD;
     const w = world._list.find((e) => e.alive && (e.type === "player" || e.type === "bot"));
     if (w) {
+      if (w.type === "player") awardMatchXp(w.id, true); // authoritative win bonus
       broadcast({ t: "winner", id: w.id, name: w.name, isBot: w.type === "bot" });
       console.log(`[iron-arena] winner: ${w.id} (${w.name})`);
     }

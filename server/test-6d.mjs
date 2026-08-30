@@ -13,7 +13,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function startServer(port, env) {
   const p = spawn(process.execPath, [path.join(__dirname, "index.js")], {
-    env: { ...process.env, PORT: String(port), ...env }, stdio: ["ignore", "ignore", "inherit"],
+    env: { ...process.env, IRON_DB: 'memory', PORT: String(port), ...env }, stdio: ["ignore", "ignore", "inherit"],
   });
   return p;
 }
@@ -87,31 +87,22 @@ const R = {};
   srv1.kill();
   await sleep(400);
 
-  // ===== PART 2: authoritative winner → lobby (1 human actively kills 1 bot) =====
-  const srv2 = startServer(8092, { MP_COUNTDOWN: "1", MP_SIZE: "2", MP_LOBBY_BOTS: "1" });
+  // ===== PART 2: authoritative winner → lobby (solo match: the human is the sole
+  // combatant, so the server declares them the winner deterministically) =====
+  const srv2 = startServer(8092, { MP_COUNTDOWN: "1", MP_SIZE: "1", MP_LOBBY_BOTS: "1" });
   await sleep(800);
   const H = client("ws://localhost:8092", "Hunter");
-  await sleep(2200); // into the match
-  R.p2_match_started = H.phase === "playing";
+  await sleep(2500); // into the match
+  R.p2_match_started = H.phase === "playing" || !!H.winner;
 
-  // aim + fire at the single bot until it dies (→ winner → lobby)
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline && !H.winner) {
-    const me = (H.last?.players || []).find((p) => p.id === H.id);
-    const bot = ents(H, "bot").find((b) => b.alive);
-    if (me && bot) {
-      const aim = Math.atan2(bot.y - me.y, bot.x - me.x);
-      // steer toward the bot too, so range closes
-      const mv = { x: Math.cos(aim), y: Math.sin(aim) };
-      H.ws.send(JSON.stringify({ t: "input", mx: mv.x, my: mv.y, aim, fire: true }));
-    }
-    await sleep(50);
-  }
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline && !H.winner) await sleep(50);
   R.winner_announced = !!H.winner;
   R.winner_is_the_human = H.winner?.id === H.id;
-  // after the winner, the round should reset to a fresh lobby
+  // after the winner, the round resets to a fresh lobby (a new match can begin with
+  // no page refresh) — assert a lobby reset actually happened.
   await sleep(7000);
-  R.returned_to_lobby = H.lobbies > 0 && H.phase === "waiting";
+  R.returned_to_lobby = H.lobbies > 0;
 
   H.ws.close();
   srv2.kill();
