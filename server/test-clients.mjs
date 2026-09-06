@@ -12,7 +12,7 @@ const URL = `ws://localhost:${PORT}`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = spawn(process.execPath, [path.join(__dirname, "index.js")], {
-  env: { ...process.env, IRON_DB: 'memory', PORT: String(PORT), MP_COUNTDOWN: "0", MP_SIZE: "2", MP_LOBBY_BOTS: "0" },
+  env: { ...process.env, IRON_DB: 'memory', PORT: String(PORT), MP_COUNTDOWN: "2", MP_SIZE: "6", MP_LOBBY_BOTS: "0" },
   stdio: ["ignore", "ignore", "inherit"],
 });
 
@@ -23,6 +23,7 @@ function client(name) {
   ws.on("message", (raw) => {
     const m = JSON.parse(raw.toString());
     if (m.t === "welcome") { c.id = m.id; c.welcome = m; }
+    else if (m.t === "matchStart") { c.matchStart = m; }
     else if (m.t === "state") { c.last = m; for (const p of m.players) c.seen[p.id] = p; }
     else if (m.t === "kill") c.killMsgs.push(m);
     else if (m.t === "leave") c.leaveMsgs.push(m);
@@ -61,6 +62,10 @@ const ok = (k, v) => { results[k] = v; };
   // ---- TEST 3: aim sync ----
   A.input(0, 0, 1.5708, false); await sleep(120);
   ok("aim_rot_seen_by_B", B.seen[A.id].rot);
+
+  // ---- Wait for the lobby's 15s countdown to end and the match to start ----
+  for (let i = 0; i < 100 && !A.matchStart; i++) await sleep(50);
+  await sleep(400); // let players teleport into the arena + first state arrive
 
   // ---- TEST 4+5+6: A + B close in (match spawns are far apart); A shoots B ->
   //      server-authoritative bullets + damage + death. B holds still while A fires.

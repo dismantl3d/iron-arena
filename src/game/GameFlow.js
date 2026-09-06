@@ -40,7 +40,7 @@ export class GameFlow {
       onCountdown: (s) => this.waiting.setCountdown(s),
       onMatchStart: () => this.#onMatchStart(),
       onMatchEnd: (stats) => this.#onMatchEnd(stats),
-      onWin: (stats) => this.winnerScreen.show(stats),
+      onWin: (stats) => this.winnerScreen.show(stats, { hidePlayAgain: true }), // unified flow: no Play Again
       onAchievements: (def) => this.toast.push(def),
     });
 
@@ -78,7 +78,9 @@ export class GameFlow {
       onWaiting: () => { this._screen = "mp"; this.waiting.show(); },
       onCountdown: (s) => this.waiting.setCountdown(s),
       onMatchStart: () => { this.#closePanels(); this.waiting.hide(); },
-      onLobby: () => { this._screen = "mp"; this.waiting.show(); },
+      // No server reachable → fall back to the offline Battle Royale (dev mechanism),
+      // so PLAY always works even without `npm run server` running.
+      onConnectFailed: () => this.#playOffline(),
       // The account synced (login / post-match reward): refresh the menu readouts
       // (level / currency) so persistent progression shows immediately.
       onProfile: () => this.menu.refresh(),
@@ -86,7 +88,6 @@ export class GameFlow {
 
     this.menu = new MainMenu(this.profile, {
       onPlay: () => this.#play(),
-      onMultiplayer: () => this.#startMultiplayer(),
       onIronPath: () => this.#openPanel(this.ironPath),
       onCosmetics: () => this.#openPanel(this.cosmetics),
       onArsenal: () => this.#openPanel(this.arsenal),
@@ -120,30 +121,28 @@ export class GameFlow {
     this.menu.show();
   }
 
-  // --- online battle royale -------------------------------------------------
-  // Enter the server-authoritative online BR. PLAY stays the offline game (which
-  // must always work with no server running); online is a first-class menu entry
-  // that reuses the same Waiting Room → BR → death/winner flow, now authoritative.
-  #startMultiplayer() {
+  // --- unified PLAY (multiplayer Battle Royale) -----------------------------
+  // PLAY leads into the server-authoritative online Battle Royale: connect →
+  // matchmake into a Waiting Room → 15s countdown → BR → death/winner → Main Menu.
+  // If no server is reachable, it falls back to the offline BR (dev mechanism) so the
+  // game still runs with `npm run dev` alone. The Waiting Room / HUD / renderer / BR
+  // are the SAME components either way — only the source of truth differs.
+  #play() {
     this.profile.save();
     this.#closePanels();
     this.menu.hide();
     this.death.hide();
     this.winnerScreen.hide();
     this._screen = "mp";
-    this.game.paused = true; // hand the engine to the online mode
-    this.mp.start(); // → onWaiting shows the Waiting Room once connected
+    this.game.paused = true; // hand the engine to the online session
+    this.mp.start(); // → onWaiting shows the Waiting Room, or onConnectFailed → offline
   }
 
-  #exitMultiplayer() {
+  // Offline fallback: run the local Battle Royale (identical presentation) when no
+  // multiplayer server answers. Reachable only via #play's onConnectFailed.
+  #playOffline() {
     this.mp.stop();
-    this.waiting.hide();
     this.game.paused = false;
-    this.#toMenu();
-  }
-
-  #play() {
-    this.profile.save();
     this.menu.hide();
     this.death.hide();
     this.winnerScreen.hide();
@@ -151,6 +150,13 @@ export class GameFlow {
     this._screen = "waiting";
     this.game.enterWaiting(this.profile);
     this.waiting.show();
+  }
+
+  #exitMultiplayer() {
+    this.mp.stop();
+    this.waiting.hide();
+    this.game.paused = false;
+    this.#toMenu();
   }
 
   #onMatchStart() {
@@ -161,7 +167,7 @@ export class GameFlow {
 
   #onMatchEnd(stats) {
     this._screen = "dead";
-    this.death.show(stats);
+    this.death.show(stats, { hidePlayAgain: true }); // unified flow: no Play Again
   }
 
   // --- customization (works in menu and live in the waiting room) ----------

@@ -62,6 +62,8 @@ export class MultiplayerMode {
     this.wallEntities = [];
     this._hp = new Map(); // id -> last seen hp (for hit-spark / damage-number FX)
     this._sendAcc = 0;
+    this._seq = 0; // outgoing input sequence number
+    this._ack = 0; // latest input seq the server has processed for us
     this._trailCd = 0;
     this._rainbow = 0;
 
@@ -138,12 +140,25 @@ export class MultiplayerMode {
     this._kills = 0;
     this._spawnAt = performance.now();
     this._dead = false;
+    this._welcomed = false;
+    // Offline fallback (dev mechanism): if no server answers, PLAY falls back to the
+    // local Battle Royale. Fire onConnectFailed if we don't get a welcome in time.
+    this._connTimer = setTimeout(() => { if (!this._welcomed) this.#connectFailed(); }, 2500);
     this.net.connect();
+  }
+
+  #connectFailed() {
+    if (!this.active || this._welcomed || this._failed) return;
+    this._failed = true;
+    clearTimeout(this._connTimer);
+    this.cb.onConnectFailed?.();
   }
 
   stop() {
     if (!this.active) return;
     this.active = false;
+    this._failed = false;
+    clearTimeout(this._connTimer);
     this.net?.close();
     for (const p of this.players.values()) p.tank.dead = true;
     this.players.clear();
@@ -249,7 +264,10 @@ export class MultiplayerMode {
 
   // --- server messages ------------------------------------------------------
   #onWelcome(m) {
+    this._welcomed = true;
+    clearTimeout(this._connTimer);
     this.myId = m.id;
+    this.lobby = m.lobby;
     if (m.arena) this.arena = m.arena;
     this.phase = m.phase || "waiting";
     this.#setStatus("connected");
@@ -258,6 +276,8 @@ export class MultiplayerMode {
   }
 
   #onStatus(state) {
+    // Before a welcome, a socket error / early close means "no server" → offline fallback.
+    if (!this._welcomed && (state === "error" || state === "disconnected")) { this.#connectFailed(); return; }
     if (state === "disconnected") this.#setStatus("disconnected — server closed");
     else if (state === "error") this.#setStatus("connection error");
     else if (state === "connecting") this.#setStatus("connecting…");
@@ -266,6 +286,7 @@ export class MultiplayerMode {
   #onState(snap) {
     if (!this.active) return;
     if (snap.phase) this.phase = snap.phase;
+    if (typeof snap.ack === "number") this._ack = snap.ack; // latest input the server applied
 
     // Players (+ bots + guardians): create/update/interp targets + hit-FX from hp deltas.
     const seen = new Set();
@@ -525,7 +546,7 @@ export class MultiplayerMode {
       const aim = Math.atan2(m.y - this.localTank.y, m.x - this.localTank.x);
       const fire = !this._dead && this.input.isFiring();
       const detonate = !this._dead && (this.input.isDown("ShiftLeft") || this.input.isDown("ShiftRight"));
-      this.net.sendInput(this._dead ? 0 : mv.x, this._dead ? 0 : mv.y, aim, fire, detonate);
+      this.net.sendInput(this._dead ? 0 : mv.x, this._dead ? 0 : mv.y, aim, fire, detonate, ++this._seq);
     }
 
     if (this._serverMe && this.localTank) {

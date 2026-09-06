@@ -70,8 +70,11 @@ export class NetClient {
   auth(msg) { this.send({ t: "auth", ...msg }); }
   join(msg) { this.send({ t: "join", ...msg }); }
 
-  sendInput(mx, my, aim, fire, detonate) {
-    this.send({ t: "input", mx, my, aim, fire, detonate });
+  // `seq` is a monotonically increasing input sequence number; the server echoes the
+  // latest processed seq back as `ack` in state snapshots (client-authoritative input,
+  // server-authoritative results).
+  sendInput(mx, my, aim, fire, detonate, seq) {
+    this.send({ t: "input", seq, mx, my, aim, fire, detonate });
   }
 
   requestRespawn() {

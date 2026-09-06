@@ -25,7 +25,6 @@ export class MainMenu {
       el("h1", { class: "ia-title", text: "IRON ARENA" }),
       this.input,
       el("button", { class: "ia-btn ia-primary", text: "PLAY", on: { click: () => this.cb.onPlay() } }),
-      el("button", { class: "ia-btn", text: "MULTIPLAYER", on: { click: () => this.cb.onMultiplayer() } }),
       el("button", { class: "ia-btn", text: "IRON PATH", on: { click: () => this.cb.onIronPath() } }),
       el("button", { class: "ia-btn", text: "COSMETICS", on: { click: () => this.cb.onCosmetics() } }),
       el("button", { class: "ia-btn", text: "ARSENAL", on: { click: () => this.cb.onArsenal() } }),

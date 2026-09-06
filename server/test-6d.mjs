@@ -28,9 +28,9 @@ function client(url, name) {
     else if (m.t === "state") { c.last = m; if (m.phase) c.phase = m.phase; }
     else if (m.t === "matchStart") { c.matchStart = m; c.phase = "playing"; }
     else if (m.t === "winner") c.winner = m;
-    else if (m.t === "lobby") { c.lobbies++; c.phase = "waiting"; }
     else if (m.t === "kill") c.kills.push(m);
   });
+  ws.on("close", () => { c.closed = true; });
   return c;
 }
 const ents = (c, type) => (c.last?.players || []).filter((p) => (type ? p.type === type : true));
@@ -99,10 +99,10 @@ const R = {};
   while (Date.now() < deadline && !H.winner) await sleep(50);
   R.winner_announced = !!H.winner;
   R.winner_is_the_human = H.winner?.id === H.id;
-  // after the winner, the round resets to a fresh lobby (a new match can begin with
-  // no page refresh) — assert a lobby reset actually happened.
+  // after the winner, the match ends + cleans up (server closes the socket). No
+  // in-place lobby reset in the multi-lobby model — a new PLAY is fresh matchmaking.
   await sleep(7000);
-  R.returned_to_lobby = H.lobbies > 0;
+  R.match_ended_and_cleaned_up = H.closed === true;
 
   H.ws.close();
   srv2.kill();
