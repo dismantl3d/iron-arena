@@ -20,8 +20,9 @@ export class WinnerScreen {
       el("span", { class: "ia-k", text: "Iron Path XP" }), this.xp,
     ]);
 
+    this.playAgainBtn = el("button", { class: "ia-btn ia-primary", text: "PLAY AGAIN", on: { click: () => this.cb.onPlayAgain() } });
     const buttons = el("div", { class: "ia-col" }, [
-      el("button", { class: "ia-btn ia-primary", text: "PLAY AGAIN", on: { click: () => this.cb.onPlayAgain() } }),
+      this.playAgainBtn,
       el("button", { class: "ia-btn", text: "MAIN MENU", on: { click: () => this.cb.onMenu() } }),
     ]);
 
@@ -37,11 +38,12 @@ export class WinnerScreen {
     document.body.appendChild(this.root);
   }
 
-  show(stats) {
+  show(stats, opts = {}) {
     this.winner.textContent = `[${stats.title}] ${stats.name}`;
     this.kills.textContent = String(stats.kills);
     this.survival.textContent = `${stats.survival.toFixed(1)}s`;
     this.xp.textContent = `+${stats.xp ?? 0}`;
+    this.playAgainBtn.classList.toggle("ia-hidden", !!opts.hidePlayAgain);
     this.root.classList.remove("ia-hidden");
   }
 

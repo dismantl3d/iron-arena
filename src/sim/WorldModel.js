@@ -739,6 +739,13 @@ export class WorldModel {
           x: round(e.x, 100), y: round(e.y, 100), rot: round(e.rot, 1000),
           hp: Math.round(e.hp), maxHp: e.maxHp, alive: e.alive,
         };
+        // Full cosmetics so clients render remote tanks identically (wrap body +
+        // title label) and can spawn the right trail / kill FX. Sent only when
+        // non-default to keep snapshots compact.
+        if (e.wrap) p.wrap = e.wrap;
+        if (e.trail) p.trail = e.trail;
+        if (e.killFx) p.killFx = e.killFx;
+        if (e.title) p.title = e.title;
         if (e.type === "guardian") p.r = e.radius; // clients size the guardian tank
         if (e.heat > 0.01) p.heat = round(e.heat, 100); // laser barrel glow
         if (e.beam) p.beam = { x: round(e.beam.x, 10), y: round(e.beam.y, 10) }; // laser endpoint

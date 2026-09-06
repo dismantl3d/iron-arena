@@ -1,40 +1,49 @@
-// Networked Battle Royale (Phase 14.2 Step 6e): the client controller for the
-// SERVER-AUTHORITATIVE Iron Arena match. No longer a dev stepping stone — this is
-// the real online experience, reusing the existing Engine + Tank + HUD + Minimap +
-// UpgradeHUD + Waiting Room, driven entirely by the authoritative server.
+// Networked Battle Royale (Phase 14.2 Step 6e + Step 7). The client controller for
+// the SERVER-AUTHORITATIVE Iron Arena match. It renders the online world using the
+// EXACT SAME components as the offline game (Tank, UpgradePickup, Crate, Wall, the
+// arena grid/floor/border, the Fog edge, Particle/DamageNumber FX, and the real
+// DeathScreen/WinnerScreen) so online looks identical to offline — only the source
+// of truth differs (server snapshots instead of a local sim).
 //
-//   • local player  — a real Tank (input + camera) with LIGHT client prediction,
-//                      softly corrected toward the server.
-//   • remote players — Tanks interpolated from snapshots (never simulated locally).
-//   • bots           — server-side, rendered identically to remote players.
-//   • guardians      — server-side heavy tanks, rendered from the snapshot.
-//   • bullets/crates/pickups/fog/walls — authoritative world objects, rendered from
-//                      the snapshot; the client draws, the server decides.
+//   • local player  — a real Tank (input + camera) with light client prediction.
+//   • remote players/bots/guardians — Tanks interpolated from snapshots.
+//   • world objects  — pickups/crates/walls/fog rendered from the snapshot with the
+//                      offline entities/renderers.
+//   • combat FX      — muzzle flash, hit sparks, damage numbers, kill FX, crate/death
+//                      bursts, movement trail, and distance-based camera shake, all
+//                      DERIVED from snapshot deltas + authoritative kill events.
 //
-// The client NEVER decides gameplay outcomes (position/HP/damage/loot/kills/winner
-// are all the server's). Flow: lobby (waiting room + countdown) → matchStart → BR →
-// death (Killed-By card) / winner (Victory) → lobby, all server-authoritative.
+// The client never decides gameplay outcomes; it only sends intent and draws what the
+// server reports (accounts: it authenticates + mirrors the authoritative profile).
 
 import { Container, Graphics, Text } from "pixi.js";
 import { GAME, COLORS, WORLD } from "../config.js";
 import { Tank } from "../entities/Tank.js";
+import { UpgradePickup } from "../entities/UpgradePickup.js";
+import { Crate } from "../entities/Crate.js";
+import { Wall } from "../entities/Wall.js";
+import { Particle } from "../entities/Particle.js";
+import { DamageNumber } from "../entities/DamageNumber.js";
 import { drawCircle, darken } from "../render/shapes.js";
-import { drawUpgradeIcon } from "../render/upgradeIcons.js";
-import { RARITY_COLOR } from "../game/upgrades.js";
-import { weaponPreviewSvg } from "../ui/weaponPreview.js";
-import { hexToCss } from "../ui/dom.js";
+import { createGrid } from "../render/Grid.js";
+import { createArenaFloor, createArenaBorder } from "../render/Arena.js";
 import { Hud } from "../ui/Hud.js";
 import { Minimap } from "../ui/Minimap.js";
 import { UpgradeHud } from "../ui/UpgradeHud.js";
+import { DeathScreen } from "../ui/DeathScreen.js";
+import { WinnerScreen } from "../ui/WinnerScreen.js";
 import { NetClient } from "./NetClient.js";
 import { AccountClient } from "./AccountClient.js";
 
 const SEND_HZ = 30; // input sends per second
 const gradOf = (c) => (c && c.gradient ? [c.gradient[0], c.gradient[1], c.dir] : null);
+const HSV = [0xff5555, 0xffa53a, 0xffd24a, 0x76d672, 0x4aa3ff, 0x9b6cff]; // rainbow trail
+const NAME_STROKE = { color: 0x1c2029, width: 3, join: "round" };
+const ENEMY_NAME = 0xff8a8a;
 const GUARDIAN_NAME = 0xb23a3a;
 
 export class MultiplayerMode {
-  // callbacks: { onExit(), onWaiting(), onCountdown(s), onMatchStart(), onLobby() }
+  // callbacks: { onExit(), onWaiting(), onCountdown(s), onMatchStart(), onLobby(), onProfile() }
   constructor(engine, input, profile, callbacks = {}) {
     this.engine = engine;
     this.input = input;
@@ -46,19 +55,20 @@ export class MultiplayerMode {
     this.myId = null;
     this.arena = WORLD.waitingBounds.maxX; // lobby arena half-extent until told otherwise
     this.phase = "waiting";
-    this.players = new Map(); // id -> { tank, label, tx, ty, trot, ... }
+    this.players = new Map(); // id -> { tank, label, titleLabel, tx, ty, trot, hp, color, ... }
     this.bullets = new Map(); // id -> { g, x, y, vx, vy, shape }
-    this.crates = new Map(); // id -> Graphics
-    this.pickups = new Map(); // id -> Graphics
+    this.crates = new Map(); // id -> Crate entity
+    this.pickups = new Map(); // id -> UpgradePickup entity
+    this.wallEntities = [];
+    this._hp = new Map(); // id -> last seen hp (for hit-spark / damage-number FX)
     this._sendAcc = 0;
+    this._trailCd = 0;
+    this._rainbow = 0;
 
     // World-space layers (rebuilt on lobby/match transitions).
     this.backdrop = null;
-    this.wallLayer = null;
     this.fogLayer = null;
     this.beamLayer = null;
-    this.crateLayer = null;
-    this.pickupLayer = null;
     this.bulletLayer = null;
 
     // Reused in-world UI (hidden unless a live match is on-screen).
@@ -66,6 +76,11 @@ export class MultiplayerMode {
     this.minimap = new Minimap(engine.app); this.minimap.view.visible = false;
     this.upgradeHud = new UpgradeHud(engine.app); this.upgradeHud.view.visible = false;
     engine.app.renderer.on("resize", () => { this.hud.layout(); this.minimap.layout(); this.upgradeHud.layout(); });
+
+    // The REAL death / winner screens (identical to offline). Online has no immediate
+    // restart, so PLAY AGAIN is hidden — only MAIN MENU (exits online).
+    this.death = new DeathScreen({ onMenu: () => this.cb.onExit?.(), onPlayAgain: () => {} });
+    this.winner = new WinnerScreen({ onMenu: () => this.cb.onExit?.(), onPlayAgain: () => {} });
 
     engine.addSystem((dt) => this.#tick(dt));
     this.#buildDom();
@@ -78,11 +93,13 @@ export class MultiplayerMode {
 
     for (const e of [...this.engine.entities]) e.dead = true; // clear the menu scene
     this.engine.camera.zoom = 1;
+    this.engine.camera.followSpeed = GAME.camera.followSpeed;
+    this.engine.camera.shakeDecay = GAME.camera.shakeDecay;
+    this.engine.camera.shakeMax = GAME.camera.shakeMax;
     this.#setArena(this.arena);
 
+    this.fogLayer = new Graphics(); this.engine.world.addChild(this.fogLayer);
     this.beamLayer = new Graphics(); this.engine.world.addChild(this.beamLayer);
-    this.crateLayer = new Container(); this.engine.world.addChild(this.crateLayer);
-    this.pickupLayer = new Container(); this.engine.world.addChild(this.pickupLayer);
     this.bulletLayer = new Container(); this.engine.world.addChild(this.bulletLayer);
 
     // Local player tank (input + camera = predicted + responsive), equipped weapon.
@@ -105,8 +122,6 @@ export class MultiplayerMode {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = import.meta.env.VITE_SERVER_URL || `${proto}//${location.hostname}:8080`;
     this.net = new NetClient(url, {
-      // Auth handshake first: authenticate the account, adopt the authoritative
-      // profile, THEN join with the (server-validated) loadout.
       onOpen: () => { this.#setStatus("authenticating…"); this.net.auth(this.account.authMessage(this.profile.displayName)); },
       onAuthOk: (m) => this.#onAuthOk(m),
       onAuthErr: (m) => this.#onAuthErr(m),
@@ -122,38 +137,58 @@ export class MultiplayerMode {
     });
     this._kills = 0;
     this._spawnAt = performance.now();
+    this._dead = false;
     this.net.connect();
+  }
+
+  stop() {
+    if (!this.active) return;
+    this.active = false;
+    this.net?.close();
+    for (const p of this.players.values()) p.tank.dead = true;
+    this.players.clear();
+    for (const c of this.crates.values()) c.dead = true;
+    for (const p of this.pickups.values()) p.dead = true;
+    for (const w of this.wallEntities) w.dead = true;
+    this.crates.clear(); this.pickups.clear(); this.wallEntities = [];
+    this.bullets.clear(); this._hp.clear();
+    if (this.localTank) this.localTank.dead = true;
+    this.localTank = null;
+    for (const layer of [this.backdrop, this.fogLayer, this.beamLayer, this.bulletLayer]) layer?.destroy({ children: true });
+    this.backdrop = this.fogLayer = this.beamLayer = this.bulletLayer = null;
+    this.hud.view.visible = false;
+    this.minimap.view.visible = false;
+    this.upgradeHud.view.visible = false;
+    this.overlay.classList.add("ia-hidden");
+    this.death.hide();
+    this.winner.hide();
+    this.engine.camera.follow(null);
+    this.engine.camera.zoom = 1;
   }
 
   // --- account handshake ----------------------------------------------------
   #onAuthOk(m) {
-    // Persist creds (a new account issues its token once) and adopt the SERVER's
-    // authoritative profile so the menu / Iron Path / cosmetics reflect the account.
     if (m.token) this.account.save(m.accountId, m.token);
     else if (m.accountId) { const c = this.account.load(); this.account.save(m.accountId, c.token); }
     this.profile.applyServerProfile(m.profile);
-    this.cb.onProfile?.(); // refresh the main menu readouts (level / currency)
+    this.cb.onProfile?.();
     this.#restyleLocalTank();
     this.#setStatus("connected");
-    // Join with the account's (validated) loadout — the server re-validates + spawns.
     const p = this.profile;
     this.net.join({ name: p.displayName, color: p.cosmetic, wrap: p.wrap, trail: p.trail, killFx: p.killFx, title: p.title, weapon: p.weapon });
   }
 
   #onAuthErr() {
-    // Stored creds were rejected (e.g. wiped server / bad token) — drop them and
-    // re-auth as a fresh guest account so the player can still play.
     this.account.clear();
     this.net.auth({ name: this.profile.displayName });
   }
 
-  // Post-match (or any) authoritative profile update: refresh the local mirror + menu.
   #onProfile(m) {
+    this._lastReward = m.reward || this._lastReward;
     this.profile.applyServerProfile(m.profile);
     this.cb.onProfile?.();
   }
 
-  // Re-style the local tank to the current profile loadout (after auth / validation).
   #restyleLocalTank() {
     const t = this.localTank;
     if (!t) return;
@@ -165,26 +200,6 @@ export class MultiplayerMode {
     this.upgradeHud.setLaserMode?.(w.fireMode === "laser");
   }
 
-  stop() {
-    if (!this.active) return;
-    this.active = false;
-    this.net?.close();
-    for (const p of this.players.values()) p.tank.dead = true;
-    this.players.clear();
-    this.bullets.clear(); this.crates.clear(); this.pickups.clear();
-    if (this.localTank) this.localTank.dead = true;
-    this.localTank = null;
-    for (const layer of [this.backdrop, this.wallLayer, this.fogLayer, this.beamLayer, this.crateLayer, this.pickupLayer, this.bulletLayer]) layer?.destroy({ children: true });
-    this.backdrop = this.wallLayer = this.fogLayer = this.beamLayer = this.crateLayer = this.pickupLayer = this.bulletLayer = null;
-    this.hud.view.visible = false;
-    this.minimap.view.visible = false;
-    this.upgradeHud.view.visible = false;
-    this.overlay.classList.add("ia-hidden");
-    this.death.classList.add("ia-hidden");
-    this.victory.classList.add("ia-hidden");
-    this.engine.camera.follow(null);
-  }
-
   // --- phase transitions ----------------------------------------------------
   #enterLobby() {
     this.phase = "waiting";
@@ -193,9 +208,8 @@ export class MultiplayerMode {
     this.hud.view.visible = false;
     this.minimap.view.visible = false;
     this.upgradeHud.view.visible = false;
-    this.death.classList.add("ia-hidden");
-    this.victory.classList.add("ia-hidden");
-    if (this.killerCard) this.killerCard.classList.add("ia-hidden");
+    this.death.hide();
+    this.winner.hide();
     this._dead = false;
     this.cb.onWaiting?.();
   }
@@ -204,31 +218,32 @@ export class MultiplayerMode {
     this.phase = "playing";
     if (arena) this.arena = arena;
     this.#setArena(this.arena);
-    this.#drawWalls(walls);
+    this.#buildWalls(walls);
     this.hud.view.visible = true;
     this.minimap.view.visible = true;
     this.upgradeHud.view.visible = true;
     this.upgradeHud.refresh({ normals: {}, specials: [] });
-    this._kills = 0; this._spawnAt = performance.now();
-    this.death.classList.add("ia-hidden");
-    this.victory.classList.add("ia-hidden");
+    this._kills = 0; this._spawnAt = performance.now(); this._dead = false;
+    this.death.hide();
+    this.winner.hide();
     this.cb.onMatchStart?.();
   }
 
-  // Resize the arena backdrop + camera bounds (lobby is small, the match is full).
+  // Resize the arena backdrop (reuses the OFFLINE grid/floor/border so it matches).
   #setArena(arena) {
     this.engine.camera.bounds = { minX: -arena, minY: -arena, maxX: arena, maxY: arena };
     if (this.localTank) this.localTank.bounds = this.engine.camera.bounds;
     if (this.backdrop) this.backdrop.destroy({ children: true });
-    this.backdrop = this.#buildBackdrop(arena);
+    this.backdrop = this.#buildBackdrop(this.engine.camera.bounds);
     this.engine.world.addChildAt(this.backdrop, 0);
   }
 
   #clearWorldObjects() {
-    for (const g of this.crates.values()) g.destroy();
-    for (const g of this.pickups.values()) g.destroy();
-    this.crates.clear(); this.pickups.clear();
-    this.wallLayer?.clear();
+    for (const c of this.crates.values()) c.dead = true;
+    for (const p of this.pickups.values()) p.dead = true;
+    for (const w of this.wallEntities) w.dead = true;
+    this.crates.clear(); this.pickups.clear(); this.wallEntities = [];
+    this._wallBounds = [];
     this.fogLayer?.clear();
   }
 
@@ -252,21 +267,23 @@ export class MultiplayerMode {
     if (!this.active) return;
     if (snap.phase) this.phase = snap.phase;
 
-    // Players (+ bots + guardians): create/update/interp targets.
+    // Players (+ bots + guardians): create/update/interp targets + hit-FX from hp deltas.
     const seen = new Set();
     for (const sp of snap.players) {
       seen.add(sp.id);
+      this.#hitFx(sp); // hit sparks + damage numbers from authoritative hp drops
       if (sp.id === this.myId) { this._serverMe = sp; this._myUp = sp.up; continue; }
       let p = this.players.get(sp.id);
       if (!p) p = this.#addPlayer(sp);
       p.tx = sp.x; p.ty = sp.y; p.trot = sp.rot;
-      p.hp = sp.hp; p.maxHp = sp.maxHp; p.alive = sp.alive;
+      p.hp = sp.hp; p.maxHp = sp.maxHp; p.alive = sp.alive; p.color = sp.color;
       p.tank.hp = sp.hp; p.tank.maxHp = sp.maxHp;
       p.tank.view.visible = sp.alive;
     }
     for (const id of [...this.players.keys()]) if (!seen.has(id)) this.#removePlayer(id);
 
-    // Bullets (reconcile with the authoritative list).
+    // Bullets (reconcile) + muzzle flash for the LOCAL player's new shots (offline
+    // only the player muzzle-flashes).
     const alive = new Set();
     for (const sb of snap.bullets) {
       alive.add(sb.id);
@@ -276,33 +293,28 @@ export class MultiplayerMode {
         this.bulletLayer.addChild(g);
         b = { g, x: sb.x, y: sb.y, vx: sb.vx, vy: sb.vy, shape: sb.shape || "circle" };
         this.bullets.set(sb.id, b);
+        if (sb.owner === this.myId) this.#muzzleFlash(sb.x, sb.y, Math.atan2(sb.vy, sb.vx));
       }
       b.x = sb.x; b.y = sb.y; b.vx = sb.vx; b.vy = sb.vy;
     }
     for (const [id, b] of this.bullets) if (!alive.has(id)) { b.g.destroy(); this.bullets.delete(id); }
 
-    // Crates + pickups (authoritative world loot).
+    // Crates + pickups (authoritative world loot) via the real entities.
     this.#reconcileCrates(snap.crates || []);
     this.#reconcilePickups(snap.pickups || []);
 
-    // Fog ring + laser beams.
+    // Fog ring (offline edge) + laser beams.
     this.#drawFog(snap.fog);
     this.beamLayer.clear();
     for (const sp of snap.players) if (sp.beam) this.beamLayer.moveTo(sp.x, sp.y).lineTo(sp.beam.x, sp.beam.y).stroke({ color: 0xff3b30, width: 5, alpha: 0.85 });
 
-    // Waiting-room countdown.
     if (this.phase === "waiting" && typeof snap.countdown === "number") this.cb.onCountdown?.(Math.max(0, snap.countdown));
 
-    // My HP + death state.
+    // My HP + death/respawn state.
     const me = snap.players.find((p) => p.id === this.myId);
     if (me) {
       this.localTank.hp = me.hp; this.localTank.maxHp = me.maxHp;
-      if (me.alive && this._dead) {
-        this._spawnAt = performance.now(); this._kills = 0;
-        this.death.classList.add("ia-hidden"); this.victory.classList.add("ia-hidden"); this.killerCard.classList.add("ia-hidden");
-      } else if (!me.alive && this.phase === "playing") {
-        this.death.classList.remove("ia-hidden");
-      }
+      if (me.alive && this._dead) { this._spawnAt = performance.now(); this._kills = 0; this._dead = false; this.death.hide(); this.winner.hide(); }
       this._dead = !me.alive;
       this.localTank.view.visible = me.alive;
     }
@@ -327,20 +339,46 @@ export class MultiplayerMode {
     this.#updateDebug(humans, bots);
   }
 
+  // Hit FX from an authoritative HP drop (bullet/laser hits). A small threshold skips
+  // the fog's per-tick chip so only real hits pop a spark + damage number (offline
+  // shows damage numbers on bullet hits, not fog ticks).
+  #hitFx(sp) {
+    const prev = this._hp.get(sp.id);
+    this._hp.set(sp.id, sp.hp);
+    if (prev == null || !sp.alive) return;
+    const dmg = prev - sp.hp;
+    if (dmg >= 2) {
+      const radius = sp.type === "guardian" ? GAME.guardian.radius : 28;
+      this.#burst(sp.x, sp.y, COLORS.hitSpark, 5);
+      this.#damageNumber(sp.x, sp.y - radius, dmg);
+    }
+  }
+
   #addPlayer(sp) {
     const isGuardian = sp.type === "guardian";
     const col = isGuardian ? { color: GAME.guardian.color } : (GAME.cosmetics[sp.color] || GAME.cosmetics[0]);
     const turret = isGuardian ? "single" : (GAME.weapons[sp.weapon] || GAME.weapons[0]).turret || "single";
-    const tank = new Tank({ x: sp.x, y: sp.y, color: col.color, gradient: gradOf(col), turret, radius: isGuardian ? (sp.r || GAME.guardian.radius) : undefined, bounds: this.engine.camera.bounds });
+    const wrap = isGuardian ? "none" : (GAME.wraps[sp.wrap ?? 0] || GAME.wraps[0]).pattern;
+    const tank = new Tank({ x: sp.x, y: sp.y, color: col.color, gradient: gradOf(col), wrap, turret, radius: isGuardian ? (sp.r || GAME.guardian.radius) : undefined, bounds: this.engine.camera.bounds });
     tank.team = sp.id;
     tank.rotation = sp.rot;
-    const nameFill = isGuardian ? GUARDIAN_NAME : (sp.type === "bot" ? 0xe0756a : 0xffffff);
-    const label = new Text({ text: sp.name, style: { fill: nameFill, fontFamily: "Ubuntu, Arial", fontSize: 13, fontWeight: "bold", stroke: { color: 0x1c2029, width: 3 } } });
+    // Title label above the name (matches offline). Guardians show only "GUARDIAN".
+    let titleLabel = null;
+    if (!isGuardian) {
+      const title = GAME.titles[sp.title ?? 0] || GAME.titles[0];
+      if (!title.none) {
+        titleLabel = new Text({ text: `[${title.name}]`, style: { fill: title.color ?? COLORS.xpFill, fontFamily: "Ubuntu, Arial", fontSize: 12, fontWeight: title.bold ? "bold" : "normal", stroke: NAME_STROKE } });
+        titleLabel.anchor.set(0.5); titleLabel.position.set(0, tank.radius + 16);
+        tank.view.addChild(titleLabel);
+      }
+    }
+    const nameFill = isGuardian ? GUARDIAN_NAME : (sp.type === "bot" ? ENEMY_NAME : 0xffffff);
+    const label = new Text({ text: sp.name, style: { fill: nameFill, fontFamily: "Ubuntu, Arial", fontSize: 13, fontWeight: "bold", stroke: NAME_STROKE } });
     label.anchor.set(0.5);
-    label.position.set(0, tank.radius + 20);
+    label.position.set(0, tank.radius + (titleLabel ? 33 : 20));
     tank.view.addChild(label);
     this.engine.addEntity(tank);
-    const p = { tank, label, tx: sp.x, ty: sp.y, trot: sp.rot, hp: sp.hp, maxHp: sp.maxHp, alive: sp.alive };
+    const p = { tank, label, titleLabel, tx: sp.x, ty: sp.y, trot: sp.rot, hp: sp.hp, maxHp: sp.maxHp, alive: sp.alive, color: sp.color };
     this.players.set(sp.id, p);
     return p;
   }
@@ -348,75 +386,131 @@ export class MultiplayerMode {
   #removePlayer(id) {
     const p = this.players.get(id);
     if (p) { p.tank.dead = true; this.players.delete(id); }
+    this._hp.delete(id);
   }
 
-  // --- world object rendering ----------------------------------------------
+  // --- world object rendering (real offline entities) -----------------------
   #reconcileCrates(list) {
     const alive = new Set();
     for (const c of list) {
       alive.add(c.id);
-      let g = this.crates.get(c.id);
-      if (!g) { g = this.#crateGraphic(); this.crateLayer.addChild(g); this.crates.set(c.id, g); }
-      g.position.set(c.x, c.y);
+      let e = this.crates.get(c.id);
+      if (!e) { e = new Crate({ x: c.x, y: c.y, rarity: 0, items: [] }); this.engine.addEntity(e); this.crates.set(c.id, e); }
+      e.x = c.x; e.y = c.y;
     }
-    for (const [id, g] of this.crates) if (!alive.has(id)) { g.destroy(); this.crates.delete(id); }
+    for (const [id, e] of this.crates) if (!alive.has(id)) {
+      this.#crateBurst(e.x, e.y); this.#shakeAt(e.x, e.y, 6); // a crate broke
+      e.dead = true; this.crates.delete(id);
+    }
   }
 
   #reconcilePickups(list) {
     const alive = new Set();
+    const ownNormals = this._myUp?.n || {};
+    const ownSpecials = this._myUp?.s || [];
     for (const pk of list) {
       alive.add(pk.id);
-      let g = this.pickups.get(pk.id);
-      if (!g) { g = this.#pickupGraphic(pk); this.pickupLayer.addChild(g); this.pickups.set(pk.id, g); }
-      g.position.set(pk.x, pk.y);
+      let e = this.pickups.get(pk.id);
+      if (!e) { e = new UpgradePickup({ x: pk.x, y: pk.y, kind: pk.k, typeKey: pk.t, rarity: pk.r }); this.engine.addEntity(e); this.pickups.set(pk.id, e); }
+      e.x = pk.x; e.y = pk.y;
+      // Ghost (translucent) if the LOCAL player already owns it — like offline.
+      e.ghost = pk.k === "special" ? ownSpecials.includes(pk.t) : (ownNormals[pk.t] !== undefined && ownNormals[pk.t] >= pk.r);
     }
-    for (const [id, g] of this.pickups) if (!alive.has(id)) { g.destroy(); this.pickups.delete(id); }
+    for (const [id, e] of this.pickups) if (!alive.has(id)) { e.dead = true; this.pickups.delete(id); }
   }
 
-  #crateGraphic() {
-    const r = GAME.crate.radius;
-    const g = new Graphics();
-    g.roundRect(-r, -r, r * 2, r * 2, 8).fill(COLORS.crate).stroke({ color: COLORS.crateEdge, width: 6 });
-    g.rect(-r, -r * 0.16, r * 2, r * 0.32).fill(COLORS.crateEdge);
-    g.rect(-r * 0.16, -r, r * 0.32, r * 2).fill(COLORS.crateEdge);
-    return g;
-  }
-
-  #pickupGraphic(pk) {
-    const g = new Graphics();
-    if (pk.k === "special") {
-      // Gold hex + icon (matches the special-pickup look).
-      const r = 16, pts = [];
-      for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2 - Math.PI / 2; pts.push(Math.cos(a) * r, Math.sin(a) * r); }
-      g.poly(pts).fill(0xffd24a).stroke({ color: darken(0xffd24a), width: 3 });
-      drawUpgradeIcon(g, pk.t, 0x5a4300, 12);
-    } else {
-      const col = RARITY_COLOR[pk.r] ?? RARITY_COLOR[0];
-      drawCircle(g, 0, 0, 14, col);
-      drawUpgradeIcon(g, pk.t, 0xffffff, 12);
-    }
-    return g;
-  }
-
-  #drawWalls(walls) {
-    this.wallLayer?.destroy();
-    this.wallLayer = new Graphics();
-    this.engine.world.addChildAt(this.wallLayer, 1); // above the backdrop, below tanks
+  #buildWalls(walls) {
+    for (const w of this.wallEntities) w.dead = true;
+    this.wallEntities = [];
     this._wallBounds = [];
     for (const w of walls) {
-      this.wallLayer.rect(w.x - w.w / 2, w.y - w.h / 2, w.w, w.h).fill(COLORS.wall).stroke({ color: darken(COLORS.wall), width: 6, alignment: 0 });
-      this._wallBounds.push({ minX: w.x - w.w / 2, minY: w.y - w.h / 2, maxX: w.x + w.w / 2, maxY: w.y + w.h / 2 });
+      const wall = new Wall({ x: w.x, y: w.y, w: w.w, h: w.h });
+      this.engine.addEntity(wall);
+      this.wallEntities.push(wall);
+      this._wallBounds.push({ minX: wall.minX, minY: wall.minY, maxX: wall.maxX, maxY: wall.maxY });
     }
   }
 
+  // Fog edge, matching offline Fog#draw exactly (hazy band + crisp edge).
   #drawFog(fog) {
-    if (!this.fogLayer) { this.fogLayer = new Graphics(); this.engine.world.addChild(this.fogLayer); }
     const g = this.fogLayer.clear();
     if (!fog) return;
-    // Safe-zone edge ring + a shaded band just outside it (toxic).
-    g.circle(0, 0, fog.r).stroke({ color: GAME.fog.color, width: 8, alpha: 0.5 });
-    g.circle(0, 0, fog.r + 6).stroke({ color: GAME.fog.color, width: 3, alpha: 0.9 });
-    if (fog.nr != null && fog.nr < fog.r) g.circle(0, 0, fog.nr).stroke({ color: GAME.fog.color, width: 2, alpha: 0.4 });
+    g.circle(0, 0, fog.r).stroke({ color: GAME.fog.color, width: 60, alpha: 0.28 }) // hazy band
+      .circle(0, 0, fog.r).stroke({ color: GAME.fog.color, width: 6, alpha: 0.9 }); // crisp edge
+  }
+
+  // --- combat FX (ported from Game.js so online looks/feels identical) -------
+  #burst(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 80 + Math.random() * 170;
+      this.engine.addEntity(new Particle({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 3 + Math.random() * 3, color, life: 0.3 + Math.random() * 0.25 }));
+    }
+  }
+
+  #muzzleFlash(x, y, angle) {
+    for (let i = 0; i < 4; i++) {
+      const a = angle + (Math.random() - 0.5) * 0.5;
+      const s = 120 + Math.random() * 130;
+      this.engine.addEntity(new Particle({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 2 + Math.random() * 2, color: 0xfff2c0, life: 0.1 + Math.random() * 0.08 }));
+    }
+  }
+
+  #damageNumber(x, y, amount) {
+    this.engine.addEntity(new DamageNumber({ x, y, amount: Math.round(amount) }));
+  }
+
+  #crateBurst(x, y) {
+    this.#burst(x, y, COLORS.crate, 16);
+    this.#burst(x, y, COLORS.crateEdge, 10);
+  }
+
+  // The LOCAL player's equipped kill FX at a defeated tank (offline: player kills).
+  #killEffect(x, y, color) {
+    const fx = GAME.killFx[this.profile?.killFx ?? 0]?.fx || "none";
+    if (fx === "none") return;
+    if (fx === "stars") {
+      for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; this.engine.addEntity(new Particle({ x, y, vx: Math.cos(a) * 200, vy: Math.sin(a) * 200, radius: 4, color: 0xffd24a, life: 0.6 })); }
+    } else if (fx === "explosion") {
+      this.#burst(x, y, 0xffa53a, 22); this.#burst(x, y, 0xe2564b, 14); this.engine.camera.shake(8);
+    } else if (fx === "dissolve") {
+      for (let i = 0; i < 16; i++) { const a = Math.random() * Math.PI * 2, s = 30 + Math.random() * 60; this.engine.addEntity(new Particle({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 3, color, life: 0.8 })); }
+    } else { this.#burst(x, y, color, 16); }
+  }
+
+  // Distance-based camera shake (the preserved per-player fix): full within shakeNear,
+  // linear to zero at shakeFar, silent across the map.
+  #shakeAt(x, y, amount) {
+    const p = this.localTank;
+    if (!p) return;
+    const d = Math.hypot(x - p.x, y - p.y);
+    const near = GAME.camera.shakeNear, far = GAME.camera.shakeFar;
+    if (d >= far) return;
+    const f = d <= near ? 1 : 1 - (d - near) / (far - near);
+    const amt = amount * f;
+    if (amt > 0.3) this.engine.camera.shake(amt);
+  }
+
+  // Cosmetic movement trail behind the LOCAL player (matches offline #emitTrail).
+  #emitTrail(dt) {
+    const p = this.localTank;
+    if (!p || this._dead) return;
+    const def = GAME.trails[this.profile?.trail ?? 0];
+    if (!def || def.style === "none") return;
+    if (Math.hypot(p.vx, p.vy) < 40) return;
+    this._trailCd -= dt;
+    if (this._trailCd > 0) return;
+    this._trailCd = 0.05;
+    const bx = p.x - Math.cos(p.rotation) * p.radius, by = p.y - Math.sin(p.rotation) * p.radius;
+    if (def.style === "trueSparks") {
+      const cols = [0xffd24a, 0xff8a3a, 0x9aa0a6];
+      for (let i = 0; i < 3; i++) { const a = Math.random() * Math.PI * 2, s = 60 + Math.random() * 140; this.engine.addEntity(new Particle({ x: bx, y: by, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 2 + Math.random() * 2, color: cols[(Math.random() * cols.length) | 0], life: 0.28 + Math.random() * 0.22 })); }
+      return;
+    }
+    let color = def.color ?? p.color;
+    if (def.style === "rainbow") color = HSV[(this._rainbow = (this._rainbow + 1) % HSV.length)];
+    const radius = def.style === "squares" ? 5 : def.style === "spark" ? 3 : def.style === "hologram" ? 6 : 7;
+    this.engine.addEntity(new Particle({ x: bx, y: by, vx: 0, vy: 0, radius, color, life: def.style === "smoke" ? 0.6 : def.style === "hologram" ? 0.5 : 0.4 }));
   }
 
   // --- per-frame ------------------------------------------------------------
@@ -424,7 +518,7 @@ export class MultiplayerMode {
     if (!this.active) return;
 
     this._sendAcc += dt;
-    if (this.net?.connected && this._sendAcc >= 1 / SEND_HZ) {
+    if (this.net?.connected && this.localTank && this._sendAcc >= 1 / SEND_HZ) {
       this._sendAcc = 0;
       const mv = this.input.moveAxis();
       const m = this.engine.camera.screenToWorld(this.input.mouse.x, this.input.mouse.y);
@@ -451,6 +545,8 @@ export class MultiplayerMode {
       b.g.position.set(b.x, b.y);
       if (b.shape === "arrow") b.g.rotation = Math.atan2(b.vy, b.vx);
     }
+
+    if (this.phase === "playing") this.#emitTrail(dt);
   }
 
   #bulletGraphic(shape, radius, guardian) {
@@ -476,20 +572,14 @@ export class MultiplayerMode {
     return a + d * t;
   }
 
-  #buildBackdrop(arena) {
+  // Arena backdrop: the SAME floor + grid + border the offline game uses.
+  #buildBackdrop(bounds) {
     const c = new Container();
-    const floor = new Graphics();
-    floor.rect(-arena, -arena, arena * 2, arena * 2).fill(COLORS.arenaFloor).stroke({ color: COLORS.arenaBorder, width: 8 });
-    const grid = new Graphics();
-    const step = 120;
-    for (let x = -arena; x <= arena; x += step) grid.moveTo(x, -arena).lineTo(x, arena);
-    for (let y = -arena; y <= arena; y += step) grid.moveTo(-arena, y).lineTo(arena, y);
-    grid.stroke({ color: COLORS.grid, width: 2 });
-    c.addChild(floor, grid);
+    c.addChild(createArenaFloor(bounds), createGrid(bounds), createArenaBorder(bounds));
     return c;
   }
 
-  // --- dev DOM (status HUD + death/victory overlays + exit) -----------------
+  // --- dev DOM (status HUD + Leave) -----------------------------------------
   #buildDom() {
     this.statusEl = document.createElement("div");
     this.statusEl.className = "ia-mp-status";
@@ -500,95 +590,56 @@ export class MultiplayerMode {
     this.overlay = document.createElement("div");
     this.overlay.className = "ia-mp-overlay ia-hidden";
     this.overlay.append(this.statusEl, this.exitBtn);
-
-    this.death = document.createElement("div");
-    this.death.className = "ia-mp-death ia-hidden";
-    const dcard = document.createElement("div");
-    dcard.className = "ia-panel";
-    const dh = document.createElement("h2");
-    dh.textContent = "YOU DIED";
-    this.killerCard = document.createElement("div");
-    this.killerCard.className = "ia-killedby ia-hidden";
-    this.killerCard.innerHTML =
-      `<div class="ia-killedby-label">KILLED BY</div><div class="ia-killedby-art"></div>` +
-      `<div class="ia-killedby-name"></div><div class="ia-killedby-title"></div>`;
-    this.deathStats = document.createElement("div");
-    this.deathStats.className = "ia-note";
-    const dnote = document.createElement("div");
-    dnote.className = "ia-note";
-    dnote.textContent = "Spectating — a new match begins when this round ends.";
-    const mb = document.createElement("button");
-    mb.className = "ia-btn ia-primary";
-    mb.textContent = "Main Menu";
-    mb.onclick = () => this.cb.onExit?.();
-    dcard.append(dh, this.killerCard, this.deathStats, dnote, mb);
-    this.death.append(dcard);
-
-    this.victory = document.createElement("div");
-    this.victory.className = "ia-mp-death ia-hidden";
-    const vcard = document.createElement("div");
-    vcard.className = "ia-panel";
-    const vh = document.createElement("h2");
-    vh.textContent = "VICTORY";
-    vh.style.color = "#ffd24a";
-    this.victoryStats = document.createElement("div");
-    this.victoryStats.className = "ia-note";
-    const vm = document.createElement("button");
-    vm.className = "ia-btn ia-primary";
-    vm.textContent = "Main Menu";
-    vm.onclick = () => this.cb.onExit?.();
-    vcard.append(vh, this.victoryStats, vm);
-    this.victory.append(vcard);
-
-    document.body.append(this.overlay, this.death, this.victory);
+    document.body.append(this.overlay);
   }
 
+  // Authoritative kill event: track my kills; on MY death show the real death screen
+  // (with the killer card); spawn the death burst + kill FX + camera shake.
   #onKillMsg(m) {
     if (m.killer === this.myId) this._kills = (this._kills || 0) + 1;
+
+    // Death burst + shake at the victim (any death), and my kill FX if I got it.
+    const victim = m.victim === this.myId ? { x: this.localTank?.x ?? 0, y: this.localTank?.y ?? 0, color: this.localTank?.color ?? COLORS.tankBody } : this.players.get(m.victim);
+    if (victim) {
+      const vx = victim.x ?? victim.tank?.x, vy = victim.y ?? victim.tank?.y;
+      const vcol = (typeof victim.color === "number") ? (GAME.cosmetics[victim.color]?.color ?? COLORS.tankBody) : (victim.color ?? COLORS.tankBody);
+      if (vx != null) {
+        this.#burst(vx, vy, vcol, 20);
+        this.#shakeAt(vx, vy, 6);
+        if (m.killer === this.myId) this.#killEffect(vx, vy, vcol);
+      }
+    }
+
     if (m.victim !== this.myId) return;
-    const survival = ((performance.now() - (this._spawnAt || performance.now())) / 1000).toFixed(1);
-    this.deathStats.innerHTML = `Survival ${survival}s&nbsp;·&nbsp;Kills ${this._kills || 0}`;
-    this.#renderKiller(m.killerInfo);
+    this.#showDeath(m.killerInfo);
   }
 
   #onWinnerMsg(m) {
     if (m.id !== this.myId) return;
-    const survival = ((performance.now() - (this._spawnAt || performance.now())) / 1000).toFixed(1);
-    this.victoryStats.innerHTML = `Last tank standing&nbsp;·&nbsp;Kills ${this._kills || 0}&nbsp;·&nbsp;${survival}s`;
-    this.death.classList.add("ia-hidden");
-    this.victory.classList.remove("ia-hidden");
+    const survival = (performance.now() - (this._spawnAt || performance.now())) / 1000;
+    this.death.hide();
+    this.winner.show({ name: this.profile.displayName, title: "CHAMPION", kills: this._kills || 0, survival, xp: this._lastReward?.xp ?? 0 }, { hidePlayAgain: true });
   }
 
-  #renderKiller(info) {
-    // Guardians and the fog are text-only (no tank card), matching single-player.
-    if (!info || info.isGuardian) {
-      const art = this.killerCard.querySelector(".ia-killedby-art");
-      if (info?.isGuardian) {
-        this.killerCard.querySelector(".ia-killedby-name").textContent = "a Guardian";
-        this.killerCard.querySelector(".ia-killedby-title").classList.add("ia-hidden");
-        art.innerHTML = "";
-        this.killerCard.classList.remove("ia-hidden");
-      } else {
-        this.killerCard.classList.add("ia-hidden");
+  // Build the offline-shaped stats + killer object and show the REAL death screen.
+  #showDeath(info) {
+    const survival = (performance.now() - (this._spawnAt || performance.now())) / 1000;
+    let killedBy = "the Toxic Fog", killer = null;
+    if (info) {
+      if (info.isGuardian) { killedBy = "a Guardian"; }
+      else {
+        killedBy = info.name || "a Tank";
+        const c = GAME.cosmetics[info.color] || GAME.cosmetics[0];
+        const t = GAME.titles[info.title];
+        killer = {
+          text: killedBy,
+          tank: { color: c.color, gradient: gradOf(c), wrap: (GAME.wraps[info.wrap] || GAME.wraps[0]).pattern, turret: (GAME.weapons[info.weapon] || GAME.weapons[0]).turret || "single" },
+          name: killedBy,
+          title: t && !t.none && t.name ? { name: t.name, color: t.color, bold: t.bold } : null,
+        };
       }
-      return;
     }
-    const c = GAME.cosmetics[info.color] || GAME.cosmetics[0];
-    const w = GAME.weapons[info.weapon] || GAME.weapons[0];
-    const wrap = (GAME.wraps[info.wrap] || GAME.wraps[0]).pattern;
-    this.killerCard.querySelector(".ia-killedby-art").innerHTML = weaponPreviewSvg(w, { color: c.color, gradient: gradOf(c), wrap });
-    this.killerCard.querySelector(".ia-killedby-name").textContent = info.name || "";
-    const t = GAME.titles[info.title];
-    const titleEl = this.killerCard.querySelector(".ia-killedby-title");
-    if (t && !t.none && t.name) {
-      titleEl.textContent = `[${t.name}]`;
-      titleEl.style.color = hexToCss(t.color ?? 0x9aa0b0);
-      titleEl.style.fontWeight = t.bold ? "800" : "700";
-      titleEl.classList.remove("ia-hidden");
-    } else {
-      titleEl.classList.add("ia-hidden");
-    }
-    this.killerCard.classList.remove("ia-hidden");
+    this.death.show({ killedBy, survival, kills: this._kills || 0, xp: this._lastReward?.xp ?? 0, killer }, { hidePlayAgain: true });
   }
 
   #setStatus(text) { this._statusText = text; this.#updateDebug(); }
