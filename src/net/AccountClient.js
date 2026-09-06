@@ -18,9 +18,12 @@ export class AccountClient {
     try { localStorage.removeItem(AUTH_KEY); } catch { /* ignore */ }
   }
   // The auth message to send: existing creds if we have them, else a fresh request
-  // carrying just the display name (the server mints a new guest account + token).
-  authMessage(displayName) {
+  // carrying the display name (the server mints a new guest account + token). `xp`
+  // carries the player's local Iron Path progression so the server-side account
+  // reflects what they've actually unlocked (see AccountService.login) — required for
+  // the player's equipped loadout to validate + sync to other players.
+  authMessage(displayName, xp) {
     const c = this.load();
-    return { t: "auth", accountId: c.accountId, token: c.token, name: displayName };
+    return { t: "auth", accountId: c.accountId, token: c.token, name: displayName, xp };
   }
 }

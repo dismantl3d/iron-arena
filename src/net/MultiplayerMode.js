@@ -124,7 +124,7 @@ export class MultiplayerMode {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = import.meta.env.VITE_SERVER_URL || `${proto}//${location.hostname}:8080`;
     this.net = new NetClient(url, {
-      onOpen: () => { this.#setStatus("authenticating…"); this.net.auth(this.account.authMessage(this.profile.displayName)); },
+      onOpen: () => { this.#setStatus("authenticating…"); this.net.auth(this.account.authMessage(this.profile.displayName, this.profile.ironPathXp)); },
       onAuthOk: (m) => this.#onAuthOk(m),
       onAuthErr: (m) => this.#onAuthErr(m),
       onProfile: (m) => this.#onProfile(m),
@@ -271,8 +271,25 @@ export class MultiplayerMode {
     if (m.arena) this.arena = m.arena;
     this.phase = m.phase || "waiting";
     this.#setStatus("connected");
+    // Restyle the local tank to the SERVER-VALIDATED loadout so the local player looks
+    // exactly like what other players see (authoritative appearance).
+    if (m.loadout) this.#styleLocalTank(m.loadout);
     if (this.phase === "playing") this.#enterMatch(m.walls || [], m.arena);
     else this.#enterLobby();
+  }
+
+  // Style the local tank from explicit loadout indices (the server-validated set).
+  #styleLocalTank(L) {
+    const t = this.localTank;
+    if (!t || !L) return;
+    const c = GAME.cosmetics[L.cosmetic] || GAME.cosmetics[0];
+    const w = GAME.weapons[L.weapon] || GAME.weapons[0];
+    t.setColor?.(c.color, gradOf(c));
+    t.setWrap?.((GAME.wraps[L.wrap] || GAME.wraps[0]).pattern);
+    t.setWeapon?.(w);
+    this._localTrail = L.trail ?? 0; // used by #emitTrail for the local player
+    this._localKillFx = L.killFx ?? 0;
+    this.upgradeHud.setLaserMode?.(w.fireMode === "laser");
   }
 
   #onStatus(state) {
@@ -298,6 +315,7 @@ export class MultiplayerMode {
       if (!p) p = this.#addPlayer(sp);
       p.tx = sp.x; p.ty = sp.y; p.trot = sp.rot;
       p.hp = sp.hp; p.maxHp = sp.maxHp; p.alive = sp.alive; p.color = sp.color;
+      p.trail = sp.trail ?? 0; // equipped trail (for remote trail FX)
       p.tank.hp = sp.hp; p.tank.maxHp = sp.maxHp;
       p.tank.view.visible = sp.alive;
     }
@@ -486,9 +504,11 @@ export class MultiplayerMode {
     this.#burst(x, y, COLORS.crateEdge, 10);
   }
 
-  // The LOCAL player's equipped kill FX at a defeated tank (offline: player kills).
-  #killEffect(x, y, color) {
-    const fx = GAME.killFx[this.profile?.killFx ?? 0]?.fx || "none";
+  // The KILLER's equipped kill FX at a defeated tank. `killFxIndex` is the killer's
+  // synchronized kill-FX id (from the authoritative kill event) so every player's
+  // kill FX renders correctly on every client, using the existing kill-FX system.
+  #killEffect(x, y, color, killFxIndex) {
+    const fx = GAME.killFx[killFxIndex ?? 0]?.fx || "none";
     if (fx === "none") return;
     if (fx === "stars") {
       for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; this.engine.addEntity(new Particle({ x, y, vx: Math.cos(a) * 200, vy: Math.sin(a) * 200, radius: 4, color: 0xffd24a, life: 0.6 })); }
@@ -512,23 +532,27 @@ export class MultiplayerMode {
     if (amt > 0.3) this.engine.camera.shake(amt);
   }
 
-  // Cosmetic movement trail behind the LOCAL player (matches offline #emitTrail).
-  #emitTrail(dt) {
-    const p = this.localTank;
-    if (!p || this._dead) return;
-    const def = GAME.trails[this.profile?.trail ?? 0];
+  // Cosmetic movement trail behind ANY tank with a trail equipped (local + remote),
+  // using the SAME trail styles as offline. Movement is measured by position delta so
+  // it works for the predicted local tank and interpolated remote tanks alike.
+  #emitTrailFor(tank, trailIndex, dt) {
+    if (!tank || tank.view.visible === false) return;
+    const def = GAME.trails[trailIndex ?? 0];
     if (!def || def.style === "none") return;
-    if (Math.hypot(p.vx, p.vy) < 40) return;
-    this._trailCd -= dt;
-    if (this._trailCd > 0) return;
-    this._trailCd = 0.05;
-    const bx = p.x - Math.cos(p.rotation) * p.radius, by = p.y - Math.sin(p.rotation) * p.radius;
+    const lx = tank._tlx ?? tank.x, ly = tank._tly ?? tank.y;
+    const moved = Math.hypot(tank.x - lx, tank.y - ly);
+    tank._tlx = tank.x; tank._tly = tank.y;
+    if (moved / Math.max(dt, 1 / 120) < 40) return; // speed threshold (units/sec)
+    tank._trailCd = (tank._trailCd ?? 0) - dt;
+    if (tank._trailCd > 0) return;
+    tank._trailCd = 0.05;
+    const bx = tank.x - Math.cos(tank.rotation) * tank.radius, by = tank.y - Math.sin(tank.rotation) * tank.radius;
     if (def.style === "trueSparks") {
       const cols = [0xffd24a, 0xff8a3a, 0x9aa0a6];
       for (let i = 0; i < 3; i++) { const a = Math.random() * Math.PI * 2, s = 60 + Math.random() * 140; this.engine.addEntity(new Particle({ x: bx, y: by, vx: Math.cos(a) * s, vy: Math.sin(a) * s, radius: 2 + Math.random() * 2, color: cols[(Math.random() * cols.length) | 0], life: 0.28 + Math.random() * 0.22 })); }
       return;
     }
-    let color = def.color ?? p.color;
+    let color = def.color ?? tank.color;
     if (def.style === "rainbow") color = HSV[(this._rainbow = (this._rainbow + 1) % HSV.length)];
     const radius = def.style === "squares" ? 5 : def.style === "spark" ? 3 : def.style === "hologram" ? 6 : 7;
     this.engine.addEntity(new Particle({ x: bx, y: by, vx: 0, vy: 0, radius, color, life: def.style === "smoke" ? 0.6 : def.style === "hologram" ? 0.5 : 0.4 }));
@@ -567,7 +591,11 @@ export class MultiplayerMode {
       if (b.shape === "arrow") b.g.rotation = Math.atan2(b.vy, b.vx);
     }
 
-    if (this.phase === "playing") this.#emitTrail(dt);
+    // Movement trails for the local player + every remote player with one equipped.
+    if (this.phase === "playing") {
+      if (!this._dead) this.#emitTrailFor(this.localTank, this._localTrail ?? this.profile.trail, dt);
+      for (const p of this.players.values()) if (p.alive && p.tank.team.startsWith?.("player")) this.#emitTrailFor(p.tank, p.trail, dt);
+    }
   }
 
   #bulletGraphic(shape, radius, guardian) {
@@ -627,7 +655,8 @@ export class MultiplayerMode {
       if (vx != null) {
         this.#burst(vx, vy, vcol, 20);
         this.#shakeAt(vx, vy, 6);
-        if (m.killer === this.myId) this.#killEffect(vx, vy, vcol);
+        // Any player's kill spawns THEIR equipped kill FX (bots have none → no-op).
+        this.#killEffect(vx, vy, vcol, m.killerInfo?.killFx);
       }
     }
 

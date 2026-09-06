@@ -38,13 +38,11 @@ export class Profile {
     if (typeof wire.displayName === "string" && wire.displayName) this.username = wire.displayName;
     if (Number.isFinite(wire.xp)) this.ironPathXp = wire.xp;
     if (Number.isFinite(wire.currency)) this.money = wire.currency;
-    const L = wire.loadout || {};
-    if (Number.isFinite(L.weapon)) this.weapon = L.weapon;
-    if (Number.isFinite(L.cosmetic)) this.cosmetic = L.cosmetic;
-    if (Number.isFinite(L.wrap)) this.wrap = L.wrap;
-    if (Number.isFinite(L.trail)) this.trail = L.trail;
-    if (Number.isFinite(L.killFx)) this.killFx = L.killFx;
-    if (Number.isFinite(L.title)) this.title = L.title;
+    // NOTE: the equipped LOADOUT is the player's live choice (Arsenal / Cosmetics UI);
+    // it is NOT overwritten from the server here. The client sends it on join, the
+    // server validates it against the account, and the client restyles the local tank
+    // from the server-validated result (see MultiplayerMode). Overwriting it here would
+    // fight the player's current menu selection.
     this.serverStats = wire.stats || null; // persistent match stats (for the profile UI)
     this.save();
   }

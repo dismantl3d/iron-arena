@@ -187,7 +187,7 @@ export class Match {
       ? null
       : k.type === "guardian"
         ? { name: "a Guardian", isGuardian: true }
-        : { name: k.name, color: k.color ?? 0, wrap: k.wrap ?? 0, weapon: k.weapon ?? 0, title: k.title ?? 0, isBot: k.type === "bot" };
+        : { name: k.name, color: k.color ?? 0, wrap: k.wrap ?? 0, weapon: k.weapon ?? 0, title: k.title ?? 0, killFx: k.killFx ?? 0, isBot: k.type === "bot" };
     if (k && k.type === "player") k._matchKills = (k._matchKills || 0) + 1;
     const ve = this.world.get(victim);
     if (ve && ve.type === "player") this.#awardMatchXp(victim, false);

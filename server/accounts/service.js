@@ -18,20 +18,29 @@ export class AccountService {
   // presents nothing (or an unknown id) and gets a NEW guest account. A KNOWN id
   // with a BAD token is rejected (never silently overwritten / spoofed).
   //   -> { ok:true, account, token?, isNew } | { ok:false, reason }
-  login({ accountId, token, displayName } = {}) {
+  //
+  // `xp` (optional) carries the player's LOCAL progression so the account reflects
+  // what they've actually unlocked — the game's progression currently lives in the
+  // client profile (Iron Path XP), so without this a fresh guest account would own
+  // nothing and validation would strip every equipped cosmetic/weapon down to the
+  // defaults. New accounts are seeded with it; existing accounts carry forward to at
+  // least that XP (max), never losing online-earned progress. (Full server-only,
+  // tamper-proof progression is the FUTURE account work; this preserves the current
+  // single-progression ownership behavior so equipped loadouts sync correctly.)
+  login({ accountId, token, displayName, xp } = {}) {
+    const seedXp = typeof xp === "number" && Number.isFinite(xp) && xp > 0 ? Math.floor(xp) : 0;
     if (accountId) {
       const existing = this.store.getById(accountId);
       if (existing) {
         if (!verifySecret(token, existing.tokenHash, existing.tokenSalt)) return { ok: false, reason: "bad-token" };
+        if (seedXp > existing.xp) grantXp(existing, seedXp - existing.xp); // carry forward local progress
         existing.lastSeen = Date.now();
         this.store.save(existing);
         return { ok: true, account: existing, isNew: false };
       }
       // Unknown id -> fall through and mint a fresh account.
     }
-    // NOTE: only the display name is taken from the client on creation. XP/currency/
-    // unlocks are NEVER seeded from the client (server-authoritative from zero).
-    const { account, token: fresh } = createAccount({ displayName });
+    const { account, token: fresh } = createAccount({ displayName, seed: seedXp ? { ironPathXp: seedXp } : null });
     this.store.insert(account);
     return { ok: true, account, token: fresh, isNew: true };
   }

@@ -65,7 +65,7 @@ wss.on("connection", (ws) => {
     // Authenticate / identify the account (returning: {accountId, token}; fresh: new
     // guest + one-time token). The server sends the AUTHORITATIVE profile.
     if (msg.t === "auth") {
-      const res = accounts.login({ accountId: msg.accountId, token: msg.token, displayName: msg.name });
+      const res = accounts.login({ accountId: msg.accountId, token: msg.token, displayName: msg.name, xp: msg.xp });
       if (!res.ok) { send(ws, { t: "authErr", reason: res.reason }); return; }
       ws.account = res.account;
       send(ws, { t: "authOk", accountId: res.account.id, ...(res.token ? { token: res.token } : {}), profile: accounts.profile(res.account) });
