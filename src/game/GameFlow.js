@@ -20,6 +20,8 @@ import { CosmeticsPanel } from "../ui/CosmeticsPanel.js";
 import { ShopPanel } from "../ui/ShopPanel.js";
 import { AchievementsPanel } from "../ui/AchievementsPanel.js";
 import { AchievementToast } from "../ui/AchievementToast.js";
+import { AccountPanel } from "../ui/AccountPanel.js";
+import { AccountClient } from "../net/AccountClient.js";
 import { MultiplayerMode } from "../net/MultiplayerMode.js";
 import { GAME } from "../config.js";
 import { ACHIEVEMENTS } from "./achievements.js";
@@ -86,8 +88,18 @@ export class GameFlow {
       onProfile: () => this.menu.refresh(),
     });
 
+    // Hosted accounts: the menu-side account client + the small login/create-account panel.
+    // The server owns progression; these only collect credentials and mirror the result.
+    this.accountClient = new AccountClient();
+    this.accountPanel = new AccountPanel(this.profile, this.accountClient, {
+      onClose: () => this.#backFromPanel(),
+      onSignedIn: (wire, opts) => { this.profile.useAccount(wire, opts); this.menu.refresh(); },
+      onSignedOut: () => { this.profile.useLocal(); this.menu.refresh(); },
+    });
+
     this.menu = new MainMenu(this.profile, {
       onPlay: () => this.#play(),
+      onAccount: () => this.#openPanel(this.accountPanel),
       onIronPath: () => this.#openPanel(this.ironPath),
       onCosmetics: () => this.#openPanel(this.cosmetics),
       onArsenal: () => this.#openPanel(this.arsenal),
@@ -109,6 +121,17 @@ export class GameFlow {
     });
 
     this.#toMenu();
+    this.#resumeAccount();
+  }
+
+  // On startup, silently re-login from a stored session so the menu shows the account's
+  // progress (and a new device that logged in earlier keeps working after a reload).
+  async #resumeAccount() {
+    if (!this.accountClient.hasSession()) return;
+    const res = await this.accountClient.resume();
+    if (res.ok) this.profile.useAccount(res.profile, { adoptLoadout: true });
+    else if (res.reason === "bad-session") this.profile.useLocal(); // session expired/revoked → back to local
+    this.menu.refresh();
   }
 
   #toMenu() {
@@ -142,6 +165,8 @@ export class GameFlow {
   // multiplayer server answers. Reachable only via #play's onConnectFailed.
   #playOffline() {
     this.mp.stop();
+    this.profile.useLocal(); // the offline game uses the local (offline) progression
+    this.menu.refresh();
     this.game.paused = false;
     this.menu.hide();
     this.death.hide();
@@ -177,6 +202,15 @@ export class GameFlow {
     this.profile[field] = i;
     this.profile.save();
     this.game[method](i);
+    this.#syncLoadoutSoon();
+  }
+
+  // While an account is active, persist menu loadout changes on the server (debounced). The
+  // server validates against what the account owns, so this can never grant anything.
+  #syncLoadoutSoon() {
+    if (!this.profile.online) return;
+    clearTimeout(this._loadoutTimer);
+    this._loadoutTimer = setTimeout(() => this.accountClient.syncLoadout(this.profile), 700);
   }
 
   // Open a panel as the single active screen. From the main menu we hide the
@@ -201,6 +235,7 @@ export class GameFlow {
     this.ironPath.hide();
     this.shop.hide();
     this.achievements.hide();
+    this.accountPanel.hide();
   }
 
   // Developer TEST mode: unlock everything (weapons via a maxed Iron Path,
@@ -209,11 +244,20 @@ export class GameFlow {
   // panels re-render from the new profile state the next time they're opened.
   #devUnlockAll() {
     const p = this.profile;
-    p.devUnlockAll = true;
-    p.ironPathXp = GAME.ironPath.maxLevel * GAME.ironPath.xpPerLevel; // complete the Iron Path
-    for (const a of ACHIEVEMENTS) p.achievements[a.id] = { progress: a.goal, completed: true, seen: true };
-    p.money += 100000;
-    p.save();
-    this.menu.refresh();
+    if (!p.online) {
+      // Local/offline unlock (unchanged): weapons via a maxed Iron Path, cosmetics via the flag.
+      p.devUnlockAll = true;
+      p.ironPathXp = GAME.ironPath.maxLevel * GAME.ironPath.xpPerLevel; // complete the Iron Path
+      for (const a of ACHIEVEMENTS) p.achievements[a.id] = { progress: a.goal, completed: true, seen: true };
+      p.money += 100000;
+      p.save();
+      this.menu.refresh();
+    }
+    // Online progression is SERVER-owned: ask the server (it only agrees when its dev-unlock
+    // switch is on — never in production). If it declines, nothing changes.
+    this.accountClient.devUnlock(p.username).then((res) => {
+      if (res.ok) { p.useAccount(res.profile); this.menu.refresh(); }
+      else if (res.reason === "disabled") console.warn("[iron-arena] server dev-unlock is disabled (IRON_DEV_UNLOCK)");
+    });
   }
 }

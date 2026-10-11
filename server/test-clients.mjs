@@ -3,6 +3,7 @@
 // end to end — connection, movement, anti-teleport, aim, damage, death, disconnect.
 // Dev-only. (Self-hosting: no manual `npm run server` needed.)
 import WebSocket from "ws";
+import { createSnapshotCache, expandSnapshot } from "../src/net/snapshot.js";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -21,7 +22,8 @@ function client(name) {
   const c = { ws, name, id: null, welcome: null, last: null, killMsgs: [], leaveMsgs: [], seen: {} };
   ws.on("open", () => ws.send(JSON.stringify({ t: "join", name })));
   ws.on("message", (raw) => {
-    const m = JSON.parse(raw.toString());
+    let m = JSON.parse(raw.toString());
+    if (m.t === "state") m = expandSnapshot(m, (ws._cache ||= createSnapshotCache()));
     if (m.t === "welcome") { c.id = m.id; c.welcome = m; }
     else if (m.t === "matchStart") { c.matchStart = m; }
     else if (m.t === "state") { c.last = m; for (const p of m.players) c.seen[p.id] = p; }

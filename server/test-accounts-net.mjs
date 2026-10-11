@@ -8,6 +8,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import WebSocket from "ws";
+import { createSnapshotCache, expandSnapshot } from "../src/net/snapshot.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -27,7 +28,8 @@ function client(port) {
   const ws = new WebSocket(`ws://localhost:${port}`);
   const c = { ws, id: null, token: null, authOk: null, profile: null, welcome: null, winner: null, last: null };
   ws.on("message", (raw) => {
-    const m = JSON.parse(raw.toString());
+    let m = JSON.parse(raw.toString());
+    if (m.t === "state") m = expandSnapshot(m, (ws._cache ||= createSnapshotCache()));
     if (m.t === "authOk") { c.authOk = m; c.id = m.accountId; if (m.token) c.token = m.token; c.profile = m.profile; }
     else if (m.t === "authErr") c.authErr = m;
     else if (m.t === "welcome") c.welcome = m;

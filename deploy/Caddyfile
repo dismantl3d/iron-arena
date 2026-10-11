@@ -1,0 +1,5 @@
+# Caddy terminates HTTPS (free Let's Encrypt cert, auto-renewed) and proxies to the game
+# server. WebSocket upgrades (wss://) work automatically. DOMAIN comes from /etc/caddy/caddy.env.
+{$DOMAIN} {
+	reverse_proxy 127.0.0.1:8080
+}

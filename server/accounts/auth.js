@@ -43,3 +43,45 @@ export function verifySecret(secret, hashHex, saltHex) {
     return false;
   }
 }
+
+// --- password accounts + sessions (hosted-database accounts) ----------------------
+// Passwords use scrypt via the ASYNC API so a login never blocks the game loop (the
+// sync variants above are kept for the guest-token path / existing accounts).
+import { scrypt as scryptCb, createHash } from "node:crypto";
+import { promisify } from "node:util";
+const scryptAsync = promisify(scryptCb);
+
+export async function hashPassword(password) {
+  const salt = randomBytes(16);
+  const hash = await scryptAsync(String(password), salt, SCRYPT_KEYLEN);
+  return { hash: hash.toString("hex"), salt: salt.toString("hex") };
+}
+
+export async function verifyPassword(password, hashHex, saltHex) {
+  if (typeof password !== "string" || !hashHex || !saltHex) return false;
+  try {
+    const salt = Buffer.from(saltHex, "hex");
+    const expected = Buffer.from(hashHex, "hex");
+    const actual = await scryptAsync(password, salt, expected.length);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
+}
+
+// Session tokens are high-entropy random secrets, so a plain SHA-256 is enough to store
+// them safely (a DB leak can't be replayed as a login). Only the hash is persisted.
+export const hashToken = (token) => createHash("sha256").update(String(token)).digest("hex");
+
+// Username rules: 3–16 chars of letters/digits/underscore/hyphen. Case-insensitively unique.
+export function validateUsername(u) {
+  if (typeof u !== "string") return "username-invalid";
+  const t = u.trim();
+  if (t.length < 3 || t.length > 16 || !/^[A-Za-z0-9_-]+$/.test(t)) return "username-invalid";
+  return null;
+}
+// Password rules: 8–128 chars (the cap bounds scrypt cost).
+export function validatePassword(p) {
+  if (typeof p !== "string" || p.length < 8 || p.length > 128) return "password-invalid";
+  return null;
+}

@@ -7,14 +7,21 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "server": "node server/index.js"
+    "server": "node server/index.js",
+    "start": "node server/index.js",
+    "test:accounts": "node server/accounts/test-store-contract.mjs && node server/accounts/test-accounts.mjs && node server/test-auth-net.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "pg": "^8.23.1",
     "pixi.js": "^8.6.0",
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "pg-mem": "^3.0.14",
     "vite": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -3,6 +3,7 @@
 // server-side bots (consistent state), bots move + fight authoritatively, and
 // disconnects are clean. Dev-only.  (Run the server first: npm run server)
 import WebSocket from "ws";
+import { createSnapshotCache, expandSnapshot } from "../src/net/snapshot.js";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -22,7 +23,8 @@ function client(name) {
   const c = { ws, name, id: null, last: null, kills: [] };
   ws.on("open", () => ws.send(JSON.stringify({ t: "join", name })));
   ws.on("message", (raw) => {
-    const m = JSON.parse(raw.toString());
+    let m = JSON.parse(raw.toString());
+    if (m.t === "state") m = expandSnapshot(m, (ws._cache ||= createSnapshotCache()));
     if (m.t === "welcome") c.id = m.id;
     else if (m.t === "state") c.last = m;
     else if (m.t === "kill") c.kills.push(m);

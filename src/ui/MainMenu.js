@@ -36,7 +36,7 @@ export class MainMenu {
     this.money = el("div", { class: "ia-money" });
     this.level = el("div", { class: "ia-acct-level" });
     this.acctStatus = el("div", { class: "ia-acct-status" });
-    this.acct = el("div", { class: "ia-account" }, [this.level, this.acctStatus]);
+    this.acct = el("div", { class: "ia-account ia-account-btn", attrs: { title: "Account" }, on: { click: () => this.cb.onAccount?.() } }, [this.level, this.acctStatus]);
 
     // Left-middle side stack: Achievements (with an unseen badge) + a developer
     // TEST button below it.
@@ -68,7 +68,8 @@ export class MainMenu {
   refresh() {
     this.money.textContent = `$${this.profile.money}`;
     this.level.textContent = `LVL ${this.profile.ironPathLevel}`;
-    this.acctStatus.textContent = this.profile.online ? "● Account synced" : "Local progress";
+    const p = this.profile;
+    this.acctStatus.textContent = !p.online ? "Local progress · Log in" : p.accountKind === "registered" ? `● ${p.accountName}` : "● Guest account · Log in";
     this.acctStatus.classList.toggle("ia-acct-online", !!this.profile.online);
     const n = unseenAchievementCount(this.profile);
     this.badge.textContent = `(${n})`;

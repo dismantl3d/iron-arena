@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import WebSocket from "ws";
+import { createSnapshotCache, expandSnapshot } from "../src/net/snapshot.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -23,7 +24,8 @@ function client(name) {
   const ws = new WebSocket(`ws://localhost:${PORT}`);
   const c = { ws, name, welcome: null, matchStart: null, last: null };
   ws.on("message", (raw) => {
-    const m = JSON.parse(raw.toString());
+    let m = JSON.parse(raw.toString());
+    if (m.t === "state") m = expandSnapshot(m, (ws._cache ||= createSnapshotCache()));
     if (m.t === "authOk") ws.send(JSON.stringify({ t: "join", name, weapon: 0 }));
     else if (m.t === "welcome") c.welcome = m;
     else if (m.t === "matchStart") c.matchStart = m;

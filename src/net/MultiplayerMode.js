@@ -34,6 +34,7 @@ import { DeathScreen } from "../ui/DeathScreen.js";
 import { WinnerScreen } from "../ui/WinnerScreen.js";
 import { NetClient } from "./NetClient.js";
 import { AccountClient } from "./AccountClient.js";
+import { createSnapshotCache, expandSnapshot } from "./snapshot.js";
 
 const SEND_HZ = 30; // input sends per second
 const gradOf = (c) => (c && c.gradient ? [c.gradient[0], c.gradient[1], c.dir] : null);
@@ -124,7 +125,8 @@ export class MultiplayerMode {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = import.meta.env.VITE_SERVER_URL || `${proto}//${location.hostname}:8080`;
     this.net = new NetClient(url, {
-      onOpen: () => { this.#setStatus("authenticating…"); this.net.auth(this.account.authMessage(this.profile.displayName, this.profile.ironPathXp)); },
+      onOpen: () => { this.#setStatus("authenticating…"); this.net.send(this.account.authMessage(this.profile.displayName)); },
+      onKicked: () => { this.#setStatus("signed in elsewhere"); this.cb.onExit?.(); },
       onAuthOk: (m) => this.#onAuthOk(m),
       onAuthErr: (m) => this.#onAuthErr(m),
       onProfile: (m) => this.#onProfile(m),
@@ -141,6 +143,7 @@ export class MultiplayerMode {
     this._spawnAt = performance.now();
     this._dead = false;
     this._welcomed = false;
+    this._snapCache = createSnapshotCache(); // per-session cache for trimmed snapshots (see net/snapshot.js)
     // Offline fallback (dev mechanism): if no server answers, PLAY falls back to the
     // local Battle Royale. Fire onConnectFailed if we don't get a welcome in time.
     this._connTimer = setTimeout(() => { if (!this._welcomed) this.#connectFailed(); }, 2500);
@@ -183,24 +186,30 @@ export class MultiplayerMode {
 
   // --- account handshake ----------------------------------------------------
   #onAuthOk(m) {
-    if (m.token) this.account.save(m.accountId, m.token);
-    else if (m.accountId) { const c = this.account.load(); this.account.save(m.accountId, c.token); }
-    this.profile.applyServerProfile(m.profile);
+    this._authTries = 0;
+    this.account.adoptAuthOk(m); // saves guest creds / session (skips a non-persistent degraded-mode guest)
+    this.profile.useAccount(m.profile); // mirror the SERVER account (offline progress is stashed, not lost)
     this.cb.onProfile?.();
     this.#restyleLocalTank();
-    this.#setStatus("connected");
+    this.#setStatus(m.ephemeral ? "connected (account database offline — progress won't be saved)" : "connected");
     const p = this.profile;
     this.net.join({ name: p.displayName, color: p.cosmetic, wrap: p.wrap, trail: p.trail, killFx: p.killFx, title: p.title, weapon: p.weapon });
   }
 
-  #onAuthErr() {
-    this.account.clear();
-    this.net.auth({ name: this.profile.displayName });
+  // Stored credentials were rejected: drop the bad one and retry once as a fresh guest; if the
+  // server can't authenticate us at all (outage / rate limit), fall back to offline play.
+  #onAuthErr(m) {
+    this._authTries = (this._authTries || 0) + 1;
+    if (m.reason === "bad-session") this.account.clearSession();
+    else if (m.reason === "bad-token" || m.reason === "use-login") this.account.clearGuest();
+    else { this.#connectFailed(); return; }
+    if (this._authTries > 2) { this.#connectFailed(); return; }
+    this.net.send(this.account.authMessage(this.profile.displayName));
   }
 
   #onProfile(m) {
     this._lastReward = m.reward || this._lastReward;
-    this.profile.applyServerProfile(m.profile);
+    this.profile.useAccount(m.profile);
     this.cb.onProfile?.();
   }
 
@@ -273,7 +282,7 @@ export class MultiplayerMode {
     this.#setStatus("connected");
     // Restyle the local tank to the SERVER-VALIDATED loadout so the local player looks
     // exactly like what other players see (authoritative appearance).
-    if (m.loadout) this.#styleLocalTank(m.loadout);
+    if (m.loadout) { this.profile.adoptLoadout(m.loadout); this.#styleLocalTank(m.loadout); } // UI now matches what other players see
     if (this.phase === "playing") this.#enterMatch(m.walls || [], m.arena);
     else this.#enterLobby();
   }
@@ -302,6 +311,7 @@ export class MultiplayerMode {
 
   #onState(snap) {
     if (!this.active) return;
+    snap = expandSnapshot(snap, this._snapCache); // rebuild full records from the server's trimmed snapshot
     if (snap.phase) this.phase = snap.phase;
     if (typeof snap.ack === "number") this._ack = snap.ack; // latest input the server applied
 

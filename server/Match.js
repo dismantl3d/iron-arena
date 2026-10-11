@@ -213,15 +213,51 @@ export class Match {
     const s = JSON.stringify(obj);
     for (const ws of this.members.values()) { if (ws.readyState === ws.OPEN) { try { ws.send(s); } catch { /* ignore */ } } }
   }
-  // State carries a per-recipient `ack` (their latest processed input seq), so each
-  // member gets its own message.
+  // State carries a per-recipient `ack` (their latest processed input seq), so each member gets
+  // its own message — which also lets us trim what each recipient needs (bandwidth).
   #broadcastState(extra = {}) {
     const snap = this.world.snapshot();
     const now = Date.now();
+    const lootSig = lootSignature(snap); // changes only when a pickup/crate appears, goes, or moves
     for (const [id, ws] of this.members) {
       if (ws.readyState !== ws.OPEN) continue;
       const e = this.world.get(id);
-      try { ws.send(JSON.stringify({ t: "state", now, lobby: this.id, ack: e?._ack ?? 0, ...extra, ...snap })); } catch { /* ignore */ }
+      const msg = { t: "state", now, lobby: this.id, ack: e?._ack ?? 0, ...extra, phase: snap.phase, alive: snap.alive, bullets: snap.bullets, players: this.#playersFor(ws, id, snap.players) };
+      if (snap.fog) msg.fog = snap.fog;
+      // Loot is mostly static: send it only when it changed (the client keeps the last list).
+      if (ws._lootSig !== lootSig) { msg.crates = snap.crates; msg.pickups = snap.pickups; ws._lootSig = lootSig; }
+      try { ws.send(JSON.stringify(msg)); } catch { /* ignore */ }
     }
   }
+
+  // Bandwidth: identity/cosmetic fields (name, color, weapon, wrap, …) go out ONCE per recipient when a
+  // participant first appears; afterwards only the moving state is sent. A participant's owned upgrades
+  // (`up`) go only to that participant. The client merges these back into full records.
+  #playersFor(ws, selfId, players) {
+    const seen = (ws._seen ||= new Set());
+    const out = new Array(players.length);
+    for (let i = 0; i < players.length; i++) {
+      const p = players[i];
+      if (!seen.has(p.id)) { seen.add(p.id); out[i] = p.id === selfId ? p : withoutUp(p); continue; } // first sight: full record
+      const c = { id: p.id, x: p.x, y: p.y, rot: p.rot, hp: p.hp, alive: p.alive };
+      if (p.heat !== undefined) c.heat = p.heat;
+      if (p.beam !== undefined) c.beam = p.beam;
+      if (p.id === selfId && p.up !== undefined) c.up = p.up;
+      out[i] = c;
+    }
+    if (seen.size > players.length * 2 + 16) { const live = new Set(players.map((q) => q.id)); for (const k of seen) if (!live.has(k)) seen.delete(k); }
+    return out;
+  }
+}
+
+// Drop the (owner-only) owned-upgrades field from a participant record sent to someone else.
+function withoutUp(p) { const { up, ...rest } = p; return rest; }
+
+// Cheap fingerprint of the loot lists (ids + positions) so unchanged loot isn't re-sent every tick.
+function lootSignature(snap) {
+  let h = 17;
+  for (const c of snap.crates || []) h = (h * 31 + c.id * 7 + ((c.x * 10) | 0)) | 0;
+  h = (h * 31 + 0x9e37) | 0;
+  for (const p of snap.pickups || []) h = (h * 31 + p.id * 7 + ((p.x * 10) | 0) + ((p.y * 10) | 0)) | 0;
+  return `${(snap.crates || []).length}:${(snap.pickups || []).length}:${h}`;
 }

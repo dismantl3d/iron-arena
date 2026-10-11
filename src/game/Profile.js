@@ -24,27 +24,58 @@ export class Profile {
     // Online account id (null offline). When set, this Profile mirrors the SERVER-
     // authoritative account (progression is decided server-side; this is a cache).
     this.accountId = data.accountId || null;
-    this.online = false; // true while an authoritative account is loaded this session
+    // Account mode: the menu mirrors the SERVER account while `online` is true. The player's
+    // offline (local) progression is stashed in `_local` and restored by useLocal(), so
+    // switching to an online account never destroys local progress.
+    this.online = !!data.online && !!data.local;
+    this.accountKind = this.online ? data.accountKind || "guest" : null; // "guest" | "registered"
+    this.accountName = this.online ? data.accountName || null : null; // registered username
+    this._local = this.online ? data.local : null;
+    this.serverStats = data.serverStats || null;
   }
 
-  // Adopt the SERVER's authoritative account profile (Phase 14.2 Step 7). The server
-  // owns XP/currency/unlocks/loadout; the client mirrors them so the existing menu +
-  // Iron Path + cosmetics panels reflect the account. Unlocks stay DERIVED from XP
-  // (unlocks.js) — server grants match that derivation, so no client change is needed.
-  applyServerProfile(wire) {
+  // Adopt the SERVER's authoritative account profile. The server owns XP/currency/unlocks/
+  // loadout; the client mirrors them so the existing menu + Iron Path + cosmetics panels
+  // reflect the account (unlocks stay DERIVED from XP — server grants match that derivation).
+  // The first switch stashes the offline progression so it can be restored later.
+  //   adoptLoadout: copy the account's equipped loadout (explicit login on a new device).
+  //   Otherwise the player's live menu selection is kept (the server validates it on join).
+  useAccount(wire, { adoptLoadout = false } = {}) {
     if (!wire) return;
-    this.accountId = wire.accountId ?? this.accountId;
+    if (!this.online || !this._local) {
+      this._local = { ironPathXp: this.ironPathXp, money: this.money, devUnlockAll: this.devUnlockAll };
+    }
     this.online = true;
+    this.accountId = wire.accountId ?? this.accountId;
+    this.accountKind = wire.kind || "guest";
+    this.accountName = wire.username || null;
     if (typeof wire.displayName === "string" && wire.displayName) this.username = wire.displayName;
     if (Number.isFinite(wire.xp)) this.ironPathXp = wire.xp;
     if (Number.isFinite(wire.currency)) this.money = wire.currency;
-    // NOTE: the equipped LOADOUT is the player's live choice (Arsenal / Cosmetics UI);
-    // it is NOT overwritten from the server here. The client sends it on join, the
-    // server validates it against the account, and the client restyles the local tank
-    // from the server-validated result (see MultiplayerMode). Overwriting it here would
-    // fight the player's current menu selection.
+    this.devUnlockAll = false; // account unlocks are derived from the server's XP, never a local flag
+    if (adoptLoadout) this.adoptLoadout(wire.loadout, false);
     this.serverStats = wire.stats || null; // persistent match stats (for the profile UI)
     this.save();
+  }
+  applyServerProfile(wire, opts) { this.useAccount(wire, opts); } // back-compat alias
+
+  // Leave account mode (logout / offline play): restore the stashed local progression.
+  useLocal() {
+    if (this._local) Object.assign(this, this._local);
+    this._local = null;
+    this.online = false;
+    this.accountKind = null;
+    this.accountName = null;
+    this.serverStats = null;
+    this.save();
+  }
+
+  // Copy an equipped loadout (indices) into the profile — used for an explicit login and to
+  // reflect the SERVER-VALIDATED loadout after joining a match.
+  adoptLoadout(L, save = true) {
+    if (!L) return;
+    for (const f of ["weapon", "cosmetic", "wrap", "trail", "killFx", "title"]) if (Number.isFinite(L[f])) this[f] = L[f];
+    if (save) this.save();
   }
 
   // Falls back to "Unnamed Tank" when the username field is blank.
@@ -99,6 +130,11 @@ export class Profile {
           achievements: this.achievements,
           devUnlockAll: this.devUnlockAll,
           accountId: this.accountId,
+          online: this.online,
+          accountKind: this.accountKind,
+          accountName: this.accountName,
+          local: this._local,
+          serverStats: this.serverStats,
         }),
       );
     } catch {

@@ -1,0 +1,29 @@
+# systemd unit: starts the game server on boot and restarts it if it ever crashes.
+# Installed to /etc/systemd/system/iron-arena.service by deploy/setup-server.sh.
+[Unit]
+Description=Iron Arena game server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ironarena
+WorkingDirectory=/opt/iron-arena
+EnvironmentFile=/etc/iron-arena.env
+ExecStart=/usr/bin/node server/index.js
+# Crash / OOM / reboot → back up in 2 seconds. No manual "npm run server" ever.
+Restart=always
+RestartSec=2
+# SIGTERM makes the server flush pending account writes before exiting.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+# Basic hardening (the server only needs its code dir + its data dir).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/iron-arena
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

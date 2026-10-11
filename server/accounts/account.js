@@ -9,8 +9,9 @@
 // per level (claimedRewards guards against duplicate currency/unlock claims).
 
 import { levelForXp } from "../../src/game/IronPath.js";
+import { GAME } from "../../src/config.js";
 import {
-  CATEGORIES, defaultUnlocks, defaultLoadout, defaultId, idFor, indexFor,
+  CATEGORIES, defaultUnlocks, defaultLoadout, defaultId, idFor, indexFor, itemCount,
   rewardGrantsForLevel, weaponUnlockAtLevel,
 } from "./ids.js";
 import { newAccountId, newToken, hashSecret } from "./auth.js";
@@ -32,6 +33,11 @@ export function createAccount({ displayName = "", seed = null } = {}) {
     tokenHash: hash,
     tokenSalt: salt,
     displayName: sanitizeName(displayName),
+    kind: "guest", // "guest" (token identity) | "registered" (username + password)
+    username: null, // registered accounts only (display name stays separate)
+    usernameLower: null, // case-insensitive uniqueness key
+    passHash: null,
+    passSalt: null,
     createdAt: now,
     lastSeen: now,
     xp: 0,
@@ -67,6 +73,11 @@ function applySeed(account, seed) {
 // rows / partial data get filled in). Keeps the schema forgiving + forward-safe.
 export function normalize(account) {
   account.displayName = sanitizeName(account.displayName || "");
+  account.kind = account.kind === "registered" ? "registered" : "guest";
+  account.username = account.username || null;
+  account.usernameLower = account.usernameLower || (account.username ? account.username.toLowerCase() : null);
+  account.passHash = account.passHash || null;
+  account.passSalt = account.passSalt || null;
   account.xp = Math.max(0, Math.floor(account.xp || 0));
   account.currency = Math.max(0, Math.floor(account.currency || 0));
   account.claimedRewards = Array.isArray(account.claimedRewards) ? account.claimedRewards : [];
@@ -165,6 +176,8 @@ export function toProfileWire(account) {
   for (const cat of CATEGORIES) unlocks[cat] = (account.unlocks[cat] || []).map((id) => indexFor(cat, id)).filter((i) => i >= 0).sort((a, b) => a - b);
   return {
     accountId: account.id,
+    kind: account.kind,
+    username: account.username,
     displayName: account.displayName,
     xp: account.xp,
     level: levelForXp(account.xp),
@@ -173,4 +186,24 @@ export function toProfileWire(account) {
     unlocks,
     stats: { ...account.stats },
   };
+}
+
+// Update the display name (cosmetic identity — NOT the account id). Returns true if changed.
+export function setDisplayName(account, name) {
+  const n = sanitizeName(name);
+  if (n === account.displayName) return false;
+  account.displayName = n;
+  return true;
+}
+
+// DEV ONLY (gated by the server env, see IRON_DEV_UNLOCK): unlock every item and jump to
+// the max Iron Path level — the server-side equivalent of the developer TEST button.
+export function devUnlockAll(account) {
+  const maxXp = GAME.ironPath.maxLevel * GAME.ironPath.xpPerLevel;
+  if (account.xp < maxXp) grantXp(account, maxXp - account.xp);
+  for (const cat of CATEGORIES) {
+    const set = new Set(account.unlocks[cat] || []);
+    for (let i = 0; i < itemCount(cat); i++) set.add(idFor(cat, i));
+    account.unlocks[cat] = [...set];
+  }
 }

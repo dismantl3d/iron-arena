@@ -1,0 +1,24 @@
+# Auto-deploy the GAME SERVER on every push to main: SSH into the VM, pull, restart, health-check.
+# One-time setup: add these repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST     the VM's public IP or hostname
+#   DEPLOY_USER     ironarena
+#   DEPLOY_SSH_KEY  a private key whose public half is in /home/ironarena/.ssh/authorized_keys
+# (The client site is built + deployed separately by Cloudflare Pages straight from this repo.)
+name: Deploy server
+on:
+  push:
+    branches: [main]
+    paths: ["server/**", "src/**", "package*.json", "deploy/**"]   # src/ is imported by the server
+  workflow_dispatch:
+concurrency: deploy-server
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+      - name: Update and restart
+        run: ssh -i ~/.ssh/id_deploy "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "/opt/iron-arena/deploy/update.sh"

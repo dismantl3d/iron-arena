@@ -42,6 +42,7 @@ export class NetClient {
         case "authOk": this.h.onAuthOk?.(m); break;
         case "authErr": this.h.onAuthErr?.(m); break;
         case "profile": this.h.onProfile?.(m); break;
+        case "kicked": this.h.onKicked?.(m); break;
         case "welcome": this.h.onWelcome?.(m); break;
         case "state": this.h.onState?.(m); break;
         case "matchStart": this.h.onMatchStart?.(m); break;

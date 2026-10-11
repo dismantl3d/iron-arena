@@ -776,6 +776,11 @@
   text-align: right;
   pointer-events: none;
 }
+/* The chip is a button (opens the Account panel). */
+.ia-account.ia-account-btn { pointer-events: auto; cursor: pointer; }
+.ia-account.ia-account-btn:hover .ia-acct-status { color: var(--ia-text); }
+.ia-acct-panel { min-width: 320px; }
+.ia-acct-msg { min-height: 36px; margin-bottom: 8px; }
 .ia-acct-level {
   font-family: var(--ia-title-font);
   font-size: 15px;
